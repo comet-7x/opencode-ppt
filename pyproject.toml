@@ -1,18 +1,22 @@
 [project]
-name = "comet-project"
+name = "opencode-ppt"
 version = "0.1.0"
-description = "A Comet project — AI Agent / RAG system"
+description = "A opencode server to generate PowerPoint files"
 readme = "README.md"
 requires-python = ">=3.12"
 authors = [{ name = "comet-7x" }]
 dependencies = [
-    # 在这里声明运行时依赖,例如:
-    # "fastapi>=0.115",
-    # "redis>=5.0",
+    "opencode-ai>=0.1.0a36",
+    # "openai>=2.36.0",
+    # "pymilvus>=3.0.0",
+    "python-dotenv>=1.2.2",
+    "fastapi>=0.138.2",
+    "httpx[socks]>=0.28.1",
+    "python-pptx>=1.0.2",
+    "uvicorn[standard]>=0.51.0",
+    "camel-ai>=0.2.90",
 ]
 
-# 开发依赖:PEP 735 标准写法,新版 uv / pip 均支持
-# uv sync 默认就会安装 dev 组
 [dependency-groups]
 dev = [
     "ruff>=0.8.0",
@@ -23,20 +27,10 @@ dev = [
     "pre-commit>=4.6.0",
 ]
 
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
-
-[tool.hatch.build.targets.wheel]
-packages = ["src/comet_project"]
-
-# ----------------------------------------------------------------------
-# Ruff:Lint + Format(替代 flake8 / black / isort)
-# ----------------------------------------------------------------------
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-src = ["src", "tests"]
+src = ["app", "tests"]
 
 [tool.ruff.lint]
 select = [
@@ -56,55 +50,30 @@ select = [
 ignore = [
     "E501",  # 行长交给 formatter 管
     "B008",  # FastAPI 的 Depends() 默认参数是惯例,放行
+    "RUF001",  # 中文全角标点(注释/文档串)非歧义,放行
+    "RUF002",
+    "RUF003",
 ]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S101"]  # 测试里允许 assert
+# 底层 opencode 客户端属阶段二（渲染）迁移代码，lint 收敛推迟到阶段二重写时统一做
+"app/components/opencode/**" = ["ASYNC109", "N802", "RUF006", "S101", "S110", "SIM105"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["comet_project"]
+known-first-party = ["app"]
 
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
 
-# ----------------------------------------------------------------------
-# Pytest:测试 + 异步 + 覆盖率
-# ----------------------------------------------------------------------
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"          # async def test_* 自动识别,无需逐个标记
 addopts = [
     "--strict-markers",
-    "--cov=comet_project",
+    "--cov=app",
     "--cov-report=term-missing",
     "--cov-report=xml",
 ]
-
-[tool.coverage.run]
-branch = true
-source = ["src/comet_project"]
-
-[tool.coverage.report]
-show_missing = true
-skip_covered = false
-exclude_lines = [
-    "pragma: no cover",
-    "if TYPE_CHECKING:",
-    "raise NotImplementedError",
-]
-
-# ----------------------------------------------------------------------
-# Commitizen:Conventional Commits + 版本管理
-# ----------------------------------------------------------------------
-[tool.commitizen]
-name = "cz_conventional_commits"
-version = "0.1.0"
-tag_format = "v$version"
-version_files = [
-    "pyproject.toml:version",
-    "src/comet_project/__init__.py:__version__",
-]
-update_changelog_on_bump = true          # bump 时自动更新 CHANGELOG.md
-major_version_zero = true                # 0.x 阶段:破坏性变更走 minor 而非升到 1.0
-bump_message = "bump: $current_version → $new_version [skip ci]"  # [skip ci] 防 release 自触发

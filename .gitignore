@@ -33,3 +33,18 @@ htmlcov/
 
 # OS
 .DS_Store
+
+# 日志
+*.log
+
+# 临时文件
+*.tmp
+
+# 配置文件
+*.ini
+*.yml
+*.yaml
+
+# 草稿文件夹
+/draft
+
