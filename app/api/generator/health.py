@@ -6,7 +6,7 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 
 from app.config import config_engine
-from app.core.context import AppContext
+from app.core.context import context
 
 router = APIRouter(tags=["health"])
 
@@ -19,9 +19,8 @@ class HealthResponse(BaseModel):
 
 @router.get("/health", response_model=HealthResponse)
 def health() -> HealthResponse:
-    ctx = AppContext()
     return HealthResponse(
-        status="ok" if ctx.initialized else "degraded",
+        status="ok" if context.initialized else "degraded",
         model=config_engine.base_config.models.llm.model_name,
-        provider_loaded=ctx.initialized,
+        provider_loaded=context.initialized,
     )

@@ -1,26 +1,23 @@
-"""API 接线测试：注入假服务（不连模型），验证 提交→轮询、错误落 task.error、ppt 确认门。
+"""API 接线测试（无 DI，全局单例）：配置全局 context + 打桩 router 层服务单例。
 
-用 httpx.ASGITransport：POST 后台任务与测试跑在同一事件循环，可用 store.wait_all() 等它跑完。
-假服务是真服务类子类（只 override 连模型的 run；context 用轻量 SimpleNamespace）。
+假服务是真服务类子类（只 override 连模型的 run），经继承的 __init__ 用全局 context；
+故 submit / run_task / GET 都读同一个（测试设置的）全局 task_store。
 """
 
 from __future__ import annotations
 
-from types import SimpleNamespace
 from typing import Any
 
 import httpx
 import pytest
 from httpx import ASGITransport
 
+import app.api.generator.homework as hw_router
+import app.api.generator.lesson_plan as lp_router
+import app.api.generator.ppt as ppt_router
+import app.api.generator.slides as sl_router
 import app.services.generator.lesson_plan.service as lp_service_mod
-from app.dependencies import (
-    get_homework_service,
-    get_lesson_plan_service,
-    get_ppt_service,
-    get_slides_service,
-    get_task_store,
-)
+from app.core.context import context
 from app.main import app
 from app.models.generator.lesson_plan import LessonPlanResponse
 from app.models.generator.slides import SlideContent, SlideLayout
@@ -38,10 +35,6 @@ _KN_BODY = {
 }
 
 
-def _fake_context() -> Any:
-    return SimpleNamespace(knowledge_source=None, model_provider=None, task_store=None)
-
-
 def _slides() -> list[SlideContent]:
     return [
         SlideContent(index=1, title="封面", layout=SlideLayout.COVER),
@@ -51,7 +44,7 @@ def _slides() -> list[SlideContent]:
 
 class FakeLessonPlanService(LessonPlanService):
     def __init__(self, exc: Exception | None = None) -> None:
-        self.context = _fake_context()
+        super().__init__()
         self._exc = exc
 
     async def run(self, *_a: Any, **_k: Any) -> LessonPlanResponse:
@@ -62,7 +55,7 @@ class FakeLessonPlanService(LessonPlanService):
 
 class FakeSlidesService(SlidesService):
     def __init__(self, exc: Exception | None = None) -> None:
-        self.context = _fake_context()
+        super().__init__()
         self._exc = exc
 
     async def run(self, *_a: Any, **_k: Any) -> list[SlideContent]:
@@ -73,7 +66,7 @@ class FakeSlidesService(SlidesService):
 
 class FakeHomeworkService(HomeworkService):
     def __init__(self, exc: Exception | None = None) -> None:
-        self.context = _fake_context()
+        super().__init__()
         self._exc = exc
 
     async def run(self, *_a: Any, **_k: Any) -> HomeworkResult:
@@ -86,24 +79,23 @@ class FakeHomeworkService(HomeworkService):
         )
 
 
-@pytest.fixture
-def store() -> InMemoryTaskStore:
-    return InMemoryTaskStore()
-
-
 @pytest.fixture(autouse=True)
-def _wire(store: InMemoryTaskStore):
-    app.dependency_overrides[get_task_store] = lambda: store
-    app.dependency_overrides[get_lesson_plan_service] = lambda: FakeLessonPlanService()
-    app.dependency_overrides[get_slides_service] = lambda: FakeSlidesService()
-    app.dependency_overrides[get_homework_service] = lambda: FakeHomeworkService()
-    app.dependency_overrides[get_ppt_service] = lambda: PptService(
-        context=_fake_context(),
-        lesson_plan=FakeLessonPlanService(),
-        slides=FakeSlidesService(),
+def _wire(monkeypatch: pytest.MonkeyPatch):
+    context.initialize()  # 幂等：建真 provider/source/store（不触网，直到调模型）
+    context._task_store = InMemoryTaskStore()  # 每个测试一份干净的
+    monkeypatch.setattr(lp_router, "lesson_plan_service", FakeLessonPlanService())
+    monkeypatch.setattr(sl_router, "slides_service", FakeSlidesService())
+    monkeypatch.setattr(hw_router, "homework_service", FakeHomeworkService())
+    monkeypatch.setattr(
+        ppt_router, "ppt_service",
+        PptService(lesson_plan=FakeLessonPlanService(), slides=FakeSlidesService()),
     )
     yield
-    app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def store(_wire: None) -> InMemoryTaskStore:
+    return context.task_store  # type: ignore[return-value]
 
 
 def _client() -> httpx.AsyncClient:
@@ -169,12 +161,12 @@ async def test_get_unknown_task_404() -> None:
 
 
 # ————————————————————— 错误：异步任务里落 task.error ————————————————————— #
-async def test_parse_error_lands_in_task(store: InMemoryTaskStore) -> None:
+async def test_parse_error_lands_in_task(
+    store: InMemoryTaskStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from app.services.generator.common.errors import ParseError
 
-    app.dependency_overrides[get_lesson_plan_service] = lambda: FakeLessonPlanService(
-        exc=ParseError("模型吐了非法 JSON")
-    )
+    monkeypatch.setattr(lp_router, "lesson_plan_service", FakeLessonPlanService(exc=ParseError("坏 JSON")))
     async with _client() as c:
         r = await c.post("/lesson-plan/create", json=_KN_BODY)
         task_id = r.json()["task_id"]
@@ -203,11 +195,14 @@ async def test_knowledge_error_lands_in_task(
     assert "KnowledgeError" in r.json()["error"]
 
 
-async def test_upstream_model_error_lands_in_task(store: InMemoryTaskStore) -> None:
+async def test_upstream_model_error_lands_in_task(
+    store: InMemoryTaskStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from openai import APIConnectionError
 
-    app.dependency_overrides[get_homework_service] = lambda: FakeHomeworkService(
-        exc=APIConnectionError(request=httpx.Request("POST", "http://model"))
+    monkeypatch.setattr(
+        hw_router, "homework_service",
+        FakeHomeworkService(exc=APIConnectionError(request=httpx.Request("POST", "http://model"))),
     )
     async with _client() as c:
         r = await c.post("/homework/create", json=_KN_BODY)

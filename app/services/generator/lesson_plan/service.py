@@ -1,28 +1,25 @@
 """教案服务类：封装教案产线的用例与任务执行。
 
-依赖从全局 AppContext 取（model_provider / knowledge_source）；构造时可传入自定义
-context（测试用），不传则拿全局单例。
-
-- run：纯用例（吃已解析 knowledge → 教案），供独立端点 runner 和 PPT 管线共用。
-- run_task：单阶段 runner，包 run 做任务态流转 + 异常兜底进 task.error。
+- run：纯用例（吃已解析 knowledge → 教案）。
+- run_task：单阶段 runner；submit 由基类提供（接口层一行调用）。
+依赖走全局 AppContext（基类注入）。
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from app.core.context import AppContext
 from app.models.generator.lesson_plan import LessonPlanResponse
 from app.schemas.generator.lesson_plan import LessonPlanResult
 from app.schemas.generator.task import TaskStatus
 from app.services.generator.common.knowledge import resolve_knowledge
+from app.services.generator.common.service import BaseGenService
 from app.services.generator.common.task import Task, TaskStore
 from app.services.generator.lesson_plan.logic import build_request, generate_lesson_plan
 
 
-class LessonPlanService:
-    def __init__(self, context: AppContext | None = None) -> None:
-        self.context = context or AppContext()
+class LessonPlanService(BaseGenService):
+    KIND = "lesson_plan"
 
     async def run(
         self,
@@ -61,3 +58,7 @@ class LessonPlanService:
             store.update(task, status=TaskStatus.SUCCEEDED, result=result)
         except Exception as exc:  # 后台任务兜底，落到 task.error
             store.update(task, status=TaskStatus.FAILED, error=f"{type(exc).__name__}: {exc}")
+
+
+# 模块级单例：接口层直接用
+lesson_plan_service = LessonPlanService()

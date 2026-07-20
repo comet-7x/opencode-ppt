@@ -1,18 +1,17 @@
-"""逐页 slides 服务类：教案 md → 逐页内容 + 组装 source.md。依赖从 AppContext 取。"""
+"""逐页 slides 服务类：教案 md → 逐页内容 + 组装 source.md。submit 由基类提供。"""
 
 from __future__ import annotations
 
-from app.core.context import AppContext
 from app.models.generator.slides import SlideContent
 from app.schemas.generator.slides import SlidesResult
 from app.schemas.generator.task import TaskStatus
+from app.services.generator.common.service import BaseGenService
 from app.services.generator.common.task import Task, TaskStore
 from app.services.generator.slides.logic import assemble_source_md, generate_slides
 
 
-class SlidesService:
-    def __init__(self, context: AppContext | None = None) -> None:
-        self.context = context or AppContext()
+class SlidesService(BaseGenService):
+    KIND = "slides"
 
     async def run(
         self, lesson_plan_md: str, *, language: str = "中文"
@@ -35,3 +34,7 @@ class SlidesService:
             store.update(task, status=TaskStatus.SUCCEEDED, result=result)
         except Exception as exc:  # 后台任务兜底
             store.update(task, status=TaskStatus.FAILED, error=f"{type(exc).__name__}: {exc}")
+
+
+# 模块级单例：接口层直接用
+slides_service = SlidesService()

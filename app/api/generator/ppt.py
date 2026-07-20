@@ -1,15 +1,15 @@
-"""PPT 全管线路由（多阶段异步任务）：创建/查询/确认/下载/删除。
+"""PPT 全管线路由（多阶段异步任务）：创建/查询/确认/下载/删除。全局单例，不用 DI。
 
-job 是长任务：POST 立即返回 TaskRef，后台推进；轮询 GET 查 status/stage/review，
-到确认门用 POST /confirm 推进。渲染属阶段二，download 在出 pptx 前返回 409。
+job 是长任务：POST 一行提交，后台推进；轮询 GET 查 status/stage/review，到确认门 POST 确认。
+渲染属阶段二，download 在出 pptx 前返回 409。
 """
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 
-from app.dependencies import get_ppt_service, get_task_store
+from app.core.context import context
 from app.schemas.generator.ppt import (
     ConfirmRequest,
     CreateJobRequest,
@@ -19,8 +19,8 @@ from app.schemas.generator.ppt import (
     ReviewArtifact,
 )
 from app.schemas.generator.task import TaskRef, TaskStatus
-from app.services.generator.common.task import Task, TaskStore, base_detail_fields
-from app.services.generator.ppt.service import PptService
+from app.services.generator.common.task import Task, base_detail_fields
+from app.services.generator.ppt.service import ppt_service
 
 router = APIRouter(prefix="/ppt", tags=["ppt"])
 KIND = "ppt"
@@ -48,55 +48,41 @@ def _detail(task: Task) -> PptTaskDetail:
     )
 
 
+def _require(job_id: str) -> Task:
+    task = context.task_store.get(job_id)
+    if task is None or task.kind != KIND:
+        raise HTTPException(404, f"PPT 任务 {job_id} 不存在")
+    return task
+
+
 @router.post("/create", response_model=TaskRef, status_code=202)
-async def create_job(
-    req: CreateJobRequest,
-    store: TaskStore = Depends(get_task_store),
-    service: PptService = Depends(get_ppt_service),
-) -> TaskRef:
-    # 直接给 source_markdown → 从渲染阶段起步；否则从教案起步
-    start_stage = PptStage.RENDER if req.source_markdown else PptStage.LESSON_PLAN
-    context = {"source_markdown": req.source_markdown} if req.source_markdown else {}
-    task = store.create(KIND, request=req, stage=start_stage, context=context)
-    service.start(task, store)  # 后台推进，立即返回
-    return TaskRef(task_id=task.task_id, kind=task.kind, status=task.status)
+async def create_job(req: CreateJobRequest) -> TaskRef:
+    return ppt_service.submit(req)
 
 
 @router.get("/list", response_model=list[PptTaskDetail])
-def list_jobs(store: TaskStore = Depends(get_task_store)) -> list[PptTaskDetail]:
-    return [_detail(t) for t in store.list(KIND)]
+def list_jobs() -> list[PptTaskDetail]:
+    return [_detail(t) for t in context.task_store.list(KIND)]
 
 
 @router.get("/get/{job_id}", response_model=PptTaskDetail)
-def get_job(job_id: str, store: TaskStore = Depends(get_task_store)) -> PptTaskDetail:
-    task = store.get(job_id)
-    if task is None or task.kind != KIND:
-        raise HTTPException(404, f"PPT 任务 {job_id} 不存在")
-    return _detail(task)
+def get_job(job_id: str) -> PptTaskDetail:
+    return _detail(_require(job_id))
 
 
 @router.post("/confirm/{job_id}", response_model=PptTaskDetail)
-async def confirm_job(
-    job_id: str,
-    req: ConfirmRequest,
-    store: TaskStore = Depends(get_task_store),
-    service: PptService = Depends(get_ppt_service),
-) -> PptTaskDetail:
-    task = store.get(job_id)
-    if task is None or task.kind != KIND:
-        raise HTTPException(404, f"PPT 任务 {job_id} 不存在")
+async def confirm_job(job_id: str, req: ConfirmRequest) -> PptTaskDetail:
+    task = _require(job_id)
     try:
-        service.confirm(task, store, req)
+        ppt_service.confirm(task, context.task_store, req)
     except ValueError as e:
         raise HTTPException(409, str(e)) from e
     return _detail(task)
 
 
 @router.get("/download/{job_id}")
-def download_pptx(job_id: str, store: TaskStore = Depends(get_task_store)) -> FileResponse:
-    task = store.get(job_id)
-    if task is None or task.kind != KIND:
-        raise HTTPException(404, f"PPT 任务 {job_id} 不存在")
+def download_pptx(job_id: str) -> FileResponse:
+    task = _require(job_id)
     result = task.result
     if not result:
         raise HTTPException(409, f"PPT 任务 {job_id} 尚无产物（status={task.status.value}）")
@@ -109,8 +95,6 @@ def download_pptx(job_id: str, store: TaskStore = Depends(get_task_store)) -> Fi
 
 
 @router.delete("/delete/{job_id}", status_code=204)
-def delete_job(job_id: str, store: TaskStore = Depends(get_task_store)) -> None:
-    task = store.get(job_id)
-    if task is None or task.kind != KIND:
-        raise HTTPException(404, f"PPT 任务 {job_id} 不存在")
-    store.delete(job_id)
+def delete_job(job_id: str) -> None:
+    _require(job_id)
+    context.task_store.delete(job_id)

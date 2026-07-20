@@ -9,8 +9,14 @@
 from __future__ import annotations
 
 from app.core.context import AppContext
-from app.schemas.generator.ppt import ConfirmAction, ConfirmRequest, PptStage
-from app.schemas.generator.task import TaskStatus
+from app.core.context import context as app_context
+from app.schemas.generator.ppt import (
+    ConfirmAction,
+    ConfirmRequest,
+    CreateJobRequest,
+    PptStage,
+)
+from app.schemas.generator.task import TaskRef, TaskStatus
 from app.services.generator.common.knowledge import resolve_knowledge
 from app.services.generator.common.task import Task, TaskStore
 from app.services.generator.lesson_plan.service import LessonPlanService
@@ -26,9 +32,19 @@ class PptService:
         lesson_plan: LessonPlanService | None = None,
         slides: SlidesService | None = None,
     ) -> None:
-        self.context = context or AppContext()
+        self.context = context if context is not None else app_context
         self._lesson_plan = lesson_plan or LessonPlanService(self.context)
         self._slides = slides or SlidesService(self.context)
+
+    def submit(self, request: CreateJobRequest) -> TaskRef:
+        """接口层一行调用：建 PPT 任务（按入口选起始阶段）+ 后台推进 + 返回引用。"""
+        store = self.context.task_store
+        # 直接给 source_markdown → 从渲染阶段起步；否则从教案起步
+        start_stage = PptStage.RENDER if request.source_markdown else PptStage.LESSON_PLAN
+        ctx = {"source_markdown": request.source_markdown} if request.source_markdown else {}
+        task = store.create("ppt", request=request, stage=start_stage, context=ctx)
+        self.start(task, store)
+        return TaskRef(task_id=task.task_id, kind=task.kind, status=task.status)
 
     @staticmethod
     def _fail(store: TaskStore, task: Task, exc: Exception) -> None:
@@ -127,3 +143,7 @@ class PptService:
             return
 
         raise ValueError(f"阶段 {task.stage} 无确认门")
+
+
+# 模块级单例：接口层直接用
+ppt_service = PptService()

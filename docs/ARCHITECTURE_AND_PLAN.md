@@ -15,10 +15,10 @@
 | 1  | 内部枚举语言      | **全英文键**（`choice/fill_blank/subjective`、`basic/advanced/challenge`、`new_teach/review_comprehensive/unit_summary`）；prompt 要求模型输出英文键；给人看的 md 用 `TYPE_ZH`/`DIFF_ZH` 转中文 |
 | 2  | 教案/PPT/作业拓扑 | **分布为底 + 整合为薄编排**：每环节是独立自洽节点各出端点；PPT 全管线是薄状态机，只**组合调用**这些节点                                                          |
 | 3  | 配置              | **收敛到 `ConfigEngine` 一套**：全项目走 `config_engine.base_config.xxx`；`Settings` 只作 env 读取源喂它                                                          |
-| 4  | 代码组织          | **按产线切（feature-first）+ 每产线一个 Service 类**：`services/generator/<产线>/{logic.py, service.py}`；`service.py` = 一个服务类（`.run` + `.run_task`），依赖从**全局 `AppContext` 单例**取（`self.context = context or AppContext()`），`PptService` 组合其它服务；共享进 `common/`；`models/schemas/api` 按层 |
+| 4  | 代码组织          | **按产线切（feature-first）+ 每产线一个 Service 类**：`services/generator/<产线>/{logic.py, service.py}`；`service.py` = 一个服务类（`.run` + `.run_task`），依赖从**模块级 `AppContext` 单例**取（`self.context = context if context is not None else app_context`），`PptService` 组合其它服务；共享进 `common/`；`models/schemas/api` 按层 |
 | 5  | 任务态            | **统一任务运行时**：四条产线全是 `Task`（`common/task.py`）；单阶段产线（教案/作业/slides）+ 多阶段产线（ppt）跑在同一 `TaskStore` 上                             |
 | 6  | 交互模式          | **全异步：提交→轮询**。每产线自己的端点：`POST /xxx`→`202 TaskRef`，`GET /xxx/{id}`→`TaskDetail`（不留同步入口，不用统一 `/tasks`）                                |
-| 7  | 会变的边界        | `KnowledgeSource`（换 DB/云）、`TaskStore`（换 Redis）都是**接口**，本版最简实现，经 `dependencies.py` 注入，替换不动上层                                          |
+| 7  | 会变的边界        | `KnowledgeSource`（换 DB/云）、`TaskStore`（换 Redis）都是**接口**，本版最简实现，由全局 `AppContext` 持有（`initialize()` 里构建），替换只改一处                    |
 | 8  | 本版范围          | **内容管线全做**；**PPT 渲染（docker）留阶段二**                                                                                                                  |
 
 ---
@@ -29,10 +29,10 @@
 flowchart TB
     subgraph API["接口层 · api/generator/ （薄·全异步提交→轮询）"]
         A0["health.py /health"]
-        A1["ppt.py<br/>POST /ppt/jobs · GET/confirm/download"]
-        A2["lesson_plan.py<br/>POST /lesson-plan · GET /{id}"]
-        A3["homework.py<br/>POST /homework · GET /{id}"]
-        A4["slides.py<br/>POST /slides · GET /{id}"]
+        A1["ppt.py<br/>/ppt/create · get · confirm · download"]
+        A2["lesson_plan.py<br/>/lesson-plan/create · get/{id}"]
+        A3["homework.py<br/>/homework/create · get/{id}"]
+        A4["slides.py<br/>/slides/create · get/{id}"]
     end
 
     subgraph SVC["服务层 · services/generator/ （每产线一个服务类·有状态）"]
@@ -73,7 +73,7 @@ flowchart TB
 
 **分层职责边界（铁律）**
 
-- **api**：只做 HTTP 编解码 + `Depends` 注入服务/取任务。不写业务逻辑。
+- **api**：极薄。POST 一行 `xxx_service.submit(req)`；GET 读全局 `context.task_store`。**不用 DI**，直接用模块级服务单例 + 全局 context。不写业务逻辑。
 - **services**：**每产线一个服务类**（依赖 provider/source 构造注入）。`run` 纯用例 + `run_task` runner（管任务态与异常兜底）；**调 logic 节点，不自己调 CAMEL**。`PptService` 组合其它服务。
 - **logic**：无状态纯函数，`输入契约 → 输出契约`，内部调 CAMEL agent。可脱离 FastAPI 单测。
 - **models**：纯数据契约（Pydantic / dataclass），**无行为、无 IO**。
@@ -167,15 +167,12 @@ stateDiagram-v2
 ```
 app/
   main.py                        # app + lifespan + include 聚合路由 + register_exception_handlers
-  dependencies.py                # 薄工厂：get_*_service（→Service()）/ get_task_store（→AppContext().task_store）
-  utils/
-    common.py                    # SingletonMeta（单例元类）
   config/
     settings.py                  # env 读取 + _bypass_proxy_for（内网出站自动绕全局代理）
     cfg.py                       # ConfigEngine（唯一配置真相）
   core/
-    context.py                   # AppContext 单例：config/model_provider/knowledge_source/task_store(+预留 redis)
-    lifespan.py                  # 启动 AppContext().initialize()，关停 close()
+    context.py                   # AppContext（模块级单例 context）：config/model_provider/knowledge_source/task_store(+预留 redis)
+    lifespan.py                  # 启动 context.initialize()，关停 close()
     errors.py                    # register_exception_handlers（领域异常 + openai → HTTP JSON）
   models/generator/              # 数据契约（纯 Pydantic/dataclass）
     knowledge.py lesson_plan.py slides.py homework.py
@@ -185,9 +182,10 @@ app/
       camel_model.py             # ModelProvider.get(temperature)
       knowledge.py               # load/select + KnowledgeSource(fetch) + resolve_knowledge
       errors.py                  # GenerationError / KnowledgeError / ParseError / ModelError
+      service.py                 # BaseGenService（context 注入 + submit 一行：create+spawn+TaskRef）
     lesson_plan/
       logic.py                   # PROMPT + build_request + generate_lesson_plan（无状态节点）
-      service.py                 # class LessonPlanService(.run / .run_task)
+      service.py                 # class LessonPlanService(BaseGenService) + 模块单例 lesson_plan_service
     slides/
       logic.py                   # PROMPT + generate_slides + assemble_source_md
       service.py                 # class SlidesService(.run / .run_task)
@@ -202,7 +200,7 @@ app/
     slides.py                    # GenRequest + Result + SlidesTaskDetail
     homework.py                  # GenRequest + Result + HomeworkTaskDetail
     ppt.py                       # CreateJobRequest / ConfirmRequest / PptStage / ReviewArtifact / PptTaskDetail
-  api/generator/
+  api/generator/                 # 端点极薄：POST 一行 service.submit(req)；GET 读 context.task_store（无 Depends）
     __init__.py                  # 聚合 router
     health.py lesson_plan.py slides.py homework.py ppt.py
   components/opencode/           # client / events / chunks / config
@@ -229,24 +227,29 @@ app/
 
 ## 6. 关键约定
 
-### 6.0 服务类 + 全局 AppContext
+### 6.0 服务类 + 全局 AppContext + 一行 submit
 - 每条产线一个服务类：`LessonPlanService` / `SlidesService` / `HomeworkService` / `PptService`。
-- **依赖走全局 AppContext**：`__init__(self, context=None): self.context = context or AppContext()`；
-  服务用 `self.context.model_provider` / `self.context.knowledge_source`，不再层层传参。
-  `dependencies.get_*_service` 工厂只是 `return Service()`（保留 `Depends` 纯为可测性）。
+  三个单阶段的继承 `common/service.py` 的 **`BaseGenService`**；每个 service 模块底部导出**模块级单例**
+  （`lesson_plan_service` / `slides_service` / `homework_service` / `ppt_service`），接口层直接用。
+- **依赖走全局 AppContext**：`__init__(self, context=None): self.context = context if context is not None else app_context`
+  （`app_context` = 模块级单例）；服务用 `self.context.model_provider` / `self.context.knowledge_source`。
+- **一行 submit（接口层用）**：`BaseGenService.submit(request)->TaskRef` 收敛「建任务→`spawn(run_task)`→返回 TaskRef」
+  三步；端点即 `return xxx_service.submit(req)`。`PptService.submit` 另含「按入口选起始阶段」逻辑。
 - **两类方法**：`run(...)` 纯用例（返回结果，可复用、可脱离 FastAPI 单测）；
   `run_task(task, store)` runner（管任务态流转 + 异常兜进 `task.error`）。
 - **`PptService` 组合其它服务**：`__init__(context=None, *, lesson_plan=None, slides=None)`，
   默认从同一 context 建子服务，阶段方法调 `self._lesson_plan.run` / `self._slides.run`，不重复实现。
-- **测试**：服务可选 `context` 参数注入假 context（`SimpleNamespace`），绕过全局单例；
-  假子服务是真类子类只 override `run`；API 测试用 `app.dependency_overrides[get_*_service]` 换假服务。
-  （注意：`dependency_overrides` 要用零参 lambda `lambda: FakeService()`，不能直接给类——否则 FastAPI 会去解析其 `__init__` 参数。）
+- **不用依赖注入**：端点不写 `Depends`，直接用模块级服务单例 + 全局 `context`（已删 `app/dependencies.py`）。
+- **测试**：fixture 里 `context.initialize()` + 换 `context._task_store` 为干净 `InMemoryTaskStore`；
+  `monkeypatch` router 模块级 service 单例为假服务（真类子类 `super().__init__()` 用全局 context、只 override `run`）。
+  PptService 单测直接构造并注入假子服务 + 假 context。
 
 ### AppContext（全局上下文 · `app/core/context.py`）
-- `AppContext(metaclass=SingletonMeta)` 单例，集中持有共享中间件/客户端：
-  `config` / `model_provider` / `knowledge_source` / `task_store`（+ 预留 `redis` 等）。
-- 生命周期：lifespan 启动调 `initialize()`（幂等构建），关停调 `await close()`。
-- 服务里 `self.context = AppContext()` 即可取用；替换了原先「挂 `app.state` + 逐层 `Depends`」的做法。
+- **模块级单例**：`context.py` 底部实例化一次 `context = AppContext()`，各处 `from app.core.context import context`
+  共用同一个。用普通类（不用 metaclass），类型推断干净、IDE 有补全。
+- 持有共享中间件/客户端：`config` / `model_provider` / `knowledge_source` / `task_store`（+ 预留 `redis` 等）。
+- 生命周期：lifespan 启动调 `context.initialize()`（幂等构建），关停调 `await context.close()`。
+- 替换了原先「挂 `app.state` + 逐层 `Depends`」的做法。服务默认用模块 `context`，测试可传自定义 context。
 
 ### 6.1 英文枚举 ↔ 中文展示的边界
 - **内部**：`Question.type ∈ {choice, fill_blank, subjective}`；`Difficulty ∈ {basic, advanced, challenge}`；`plan_mode ∈ {new_teach, review_comprehensive, unit_summary}`。
@@ -289,17 +292,18 @@ app/
 
 - ✅ 配置收敛 + DI 基座（`ConfigEngine` / `ModelProvider` / lifespan / dependencies）+ 内网绕代理。
 - ✅ `common/`（camel_model / knowledge / task / errors）+ 三产线 `logic.py`（英文枚举 prompt）。
-- ✅ 每产线一个服务类（`LessonPlanService`/`SlidesService`/`HomeworkService`/`PptService`，`.run` + `.run_task`，DI 构造注入，`PptService` 组合其它服务）。
+- ✅ 每产线一个服务类（`LessonPlanService`/`SlidesService`/`HomeworkService`/`PptService`，`.run` + `.run_task`，`PptService` 组合其它服务）。
 - ✅ 统一任务运行时：四产线全跑在 `common/task.py` 的 `Task`/`TaskStore` 上。
-- ✅ api 全接线：健康 + 三产线异步端点（提交→轮询）+ ppt 全管线；统一错误处理。
+- ✅ 全局 `AppContext`（模块级单例 `context`，普通类）持共享中间件（config/model_provider/knowledge_source/task_store，+预留 redis）；替换 app.state + 逐层 Depends。
+- ✅ api 全接线：健康 + 四产线端点，统一 `/create`、`/get/{id}` 风格；统一错误处理。
 - ✅ 测试：`tests/test_pipeline.py`（状态机）+ `tests/test_api.py`（接线/轮询/错误落 task.error）全绿；
-  通用任务层 100% 覆盖。真机 `POST /lesson-plan` submit→poll 端到端跑通（读文件知识源 → 教案 markdown）。
+  通用任务层 100% 覆盖。真机 `POST /lesson-plan/create` submit→poll 端到端跑通（读文件知识源 → 教案 markdown）。
 
 **剩余 · 阶段二（渲染）**
 
 - 搬 `components/opencode/{docker_runtime, initializer, ppt_project}.py`。
 - `pipeline.run_render` 桩换成真实 docker 渲染（起容器 → 确定性初始化 → `run_until` 以「磁盘出现 .pptx」为判据 → `chown` → 落 `PptResult`）。
-- `/ppt/jobs/{id}/download` 出 pptx。
+- `/ppt/download/{id}` 出 pptx。
 
 **其它待议**
 

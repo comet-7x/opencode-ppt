@@ -1,16 +1,13 @@
-"""作业服务类：命题(+可选 L1/L2 校验闭环) → 结构化题目 + 卷子/答案 markdown。
-
-依赖从 AppContext 取（model_provider / knowledge_source）。
-"""
+"""作业服务类：命题(+可选 L1/L2 校验闭环) → 结构化题目 + 卷子/答案 markdown。submit 由基类提供。"""
 
 from __future__ import annotations
 
 from typing import Any
 
-from app.core.context import AppContext
 from app.schemas.generator.homework import HomeworkResult
 from app.schemas.generator.task import TaskStatus
 from app.services.generator.common.knowledge import all_points, resolve_knowledge
+from app.services.generator.common.service import BaseGenService
 from app.services.generator.common.task import Task, TaskStore
 from app.services.generator.homework.logic import (
     build_request,
@@ -21,9 +18,8 @@ from app.services.generator.homework.logic import (
 )
 
 
-class HomeworkService:
-    def __init__(self, context: AppContext | None = None) -> None:
-        self.context = context or AppContext()
+class HomeworkService(BaseGenService):
+    KIND = "homework"
 
     async def run(
         self,
@@ -82,3 +78,7 @@ class HomeworkService:
             store.update(task, status=TaskStatus.SUCCEEDED, result=result)
         except Exception as exc:  # 后台任务兜底
             store.update(task, status=TaskStatus.FAILED, error=f"{type(exc).__name__}: {exc}")
+
+
+# 模块级单例：接口层直接用
+homework_service = HomeworkService()

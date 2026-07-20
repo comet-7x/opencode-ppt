@@ -1,9 +1,9 @@
-"""全局应用上下文（单例）：集中持有共享的中间件/客户端。
+"""全局应用上下文（模块级单例）：集中持有共享的中间件/客户端。
 
-服务里 `self.context = AppContext()` 即可拿到 model_provider / knowledge_source /
-task_store（以及将来的 redis / db）。生命周期由 lifespan 驱动：启动 initialize()、关停 close()。
+模块本身即单例：本文件底部实例化一次 `context`，各处 `from app.core.context import context`
+共用同一个。服务默认用它，测试可注入自定义 context（服务的可选 context 参数）。
 
-测试可给服务传入自定义 context（服务的可选 context 参数），绕过全局单例。
+生命周期由 lifespan 驱动：启动 initialize()、关停 close()。
 """
 
 from __future__ import annotations
@@ -13,10 +13,9 @@ from app.config.cfg import ConfigEngine
 from app.services.generator.common.camel_model import ModelProvider
 from app.services.generator.common.knowledge import FileKnowledgeSource, KnowledgeSource
 from app.services.generator.common.task import InMemoryTaskStore, TaskStore
-from app.utils.common import SingletonMeta
 
 
-class AppContext(metaclass=SingletonMeta):
+class AppContext:
     def __init__(self) -> None:
         self._initialized = False
         self._config: ConfigEngine | None = None
@@ -68,3 +67,7 @@ class AppContext(metaclass=SingletonMeta):
         if self._task_store is None:
             raise RuntimeError("AppContext 未初始化：task_store 不可用")
         return self._task_store
+
+
+# 模块级单例：全项目共用这一个实例
+context = AppContext()
