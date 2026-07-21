@@ -10,6 +10,7 @@ from httpx import ASGITransport
 
 from app.components.task import InMemoryTaskStore
 from app.main import app
+from tests.conftest import unwrap
 
 _KN = {
     "course": {"title": "海洋管理概论", "profile": {"授课对象": "本科生"}, "objectives": []},
@@ -37,22 +38,19 @@ async def test_full_pipeline_stops_at_slides_gate_then_renders(
     fake_agent.reset(replies=[_LESSON_MD, _SLIDES_JSON])
 
     async with _client() as c:
-        r = await c.post("/ppt/create", json=_CREATE)
-        assert r.status_code == 202
-        job = r.json()["task_id"]
+        job = unwrap(await c.post("/ppt/create", json=_CREATE))["task_id"]
         await task_store.wait_all()
 
         # 教案无门自动过 → 停在 slides 确认门，review 里是真解析出来的 slides
-        d = (await c.get(f"/ppt/get/{job}")).json()
+        d = unwrap(await c.get(f"/ppt/get/{job}"))
         assert d["status"] == "awaiting_review" and d["stage"] == "slides"
         assert [s["layout"] for s in d["review"]["slides"]] == ["cover", "content_text"]
 
         # approve → 真的 assemble_source_md → 渲染桩
-        r = await c.post(f"/ppt/confirm/{job}", json={"action": "approve"})
-        assert r.status_code == 200
+        unwrap(await c.post(f"/ppt/confirm/{job}", json={"action": "approve"}))
         await task_store.wait_all()
 
-        d = (await c.get(f"/ppt/get/{job}")).json()
+        d = unwrap(await c.get(f"/ppt/get/{job}"))
 
     assert d["stage"] == "render" and d["status"] == "failed"
     assert "阶段二" in d["error"]
@@ -66,18 +64,19 @@ async def test_lesson_plan_gate_exposes_real_markdown(
     fake_agent.reset(replies=[_LESSON_MD, _SLIDES_JSON])
 
     async with _client() as c:
-        r = await c.post("/ppt/create", json={**_CREATE, "confirm_lesson_plan": True})
-        job = r.json()["task_id"]
+        job = unwrap(
+            await c.post("/ppt/create", json={**_CREATE, "confirm_lesson_plan": True})
+        )["task_id"]
         await task_store.wait_all()
 
-        d = (await c.get(f"/ppt/get/{job}")).json()
+        d = unwrap(await c.get(f"/ppt/get/{job}"))
         assert d["stage"] == "lesson_plan" and d["status"] == "awaiting_review"
         assert d["review"]["content"].startswith("# 海洋管理概论 教案")
 
         # approve → 进 slides 阶段，停在 slides 门
         await c.post(f"/ppt/confirm/{job}", json={"action": "approve"})
         await task_store.wait_all()
-        d = (await c.get(f"/ppt/get/{job}")).json()
+        d = unwrap(await c.get(f"/ppt/get/{job}"))
 
     assert d["stage"] == "slides" and d["status"] == "awaiting_review"
     assert len(d["review"]["slides"]) == 2
@@ -90,14 +89,14 @@ async def test_edited_slides_are_used_for_source_md(
     fake_agent.reset(replies=[_LESSON_MD, _SLIDES_JSON])
 
     async with _client() as c:
-        job = (await c.post("/ppt/create", json=_CREATE)).json()["task_id"]
+        job = unwrap(await c.post("/ppt/create", json=_CREATE))["task_id"]
         await task_store.wait_all()
 
         edited = [{"index": 1, "title": "人工改过的唯一页", "body": "- 手写要点", "layout": "end"}]
         await c.post(f"/ppt/confirm/{job}",
                      json={"action": "approve", "edited_slides": edited})
         await task_store.wait_all()
-        d = (await c.get(f"/ppt/get/{job}")).json()
+        d = unwrap(await c.get(f"/ppt/get/{job}"))
 
     assert "人工改过的唯一页" in d["source_markdown"]
     assert d["source_markdown"].count("## ") == 1
@@ -113,12 +112,12 @@ async def test_regenerate_calls_model_again(
     fake_agent.reset(replies=[_LESSON_MD, _SLIDES_JSON, second_slides])
 
     async with _client() as c:
-        job = (await c.post("/ppt/create", json=_CREATE)).json()["task_id"]
+        job = unwrap(await c.post("/ppt/create", json=_CREATE))["task_id"]
         await task_store.wait_all()
 
         await c.post(f"/ppt/confirm/{job}", json={"action": "regenerate"})
         await task_store.wait_all()
-        d = (await c.get(f"/ppt/get/{job}")).json()
+        d = unwrap(await c.get(f"/ppt/get/{job}"))
 
     # 仍停在 slides 门，但内容换成了第二次生成的
     assert d["stage"] == "slides" and d["status"] == "awaiting_review"
@@ -131,11 +130,11 @@ async def test_direct_source_markdown_skips_generation(
     """直接给 source_markdown 应跳到渲染，完全不调模型。"""
     fake_agent.reset()
     async with _client() as c:
-        job = (await c.post("/ppt/create", json={
+        job = unwrap(await c.post("/ppt/create", json={
             "name": "p", "source_markdown": "## 一页\n\n- x\n"
-        })).json()["task_id"]
+        }))["task_id"]
         await task_store.wait_all()
-        d = (await c.get(f"/ppt/get/{job}")).json()
+        d = unwrap(await c.get(f"/ppt/get/{job}"))
 
     assert d["stage"] == "render" and d["status"] == "failed"
     assert d["source_markdown"] == "## 一页\n\n- x\n"
@@ -147,9 +146,9 @@ async def test_model_failure_in_stage_lands_in_task_error(
 ) -> None:
     fake_agent.reset(default="不是 JSON")   # 教案随便过，slides 解析失败
     async with _client() as c:
-        job = (await c.post("/ppt/create", json=_CREATE)).json()["task_id"]
+        job = unwrap(await c.post("/ppt/create", json=_CREATE))["task_id"]
         await task_store.wait_all()
-        d = (await c.get(f"/ppt/get/{job}")).json()
+        d = unwrap(await c.get(f"/ppt/get/{job}"))
 
     assert d["status"] == "failed"
     assert "ParseError" in d["error"]

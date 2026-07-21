@@ -19,6 +19,27 @@ from app.components.task import InMemoryTaskStore
 from app.core.context import context
 
 
+# ————————————————————— 响应信封断言帮手 ————————————————————— #
+def unwrap(response: Any, code: int = 200) -> Any:
+    """断言统一信封（HTTP 恒 200 + body.code）并取出 data。
+
+    所有接口都返回 `{"code","msg","data"}`，业务码在 body 里，HTTP 永远是 200。
+    """
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["code"] == code, body
+    return body["data"]
+
+
+def err_msg(response: Any, code: int) -> str:
+    """断言是某个错误码的信封，返回 msg 供进一步断言。"""
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["code"] == code, body
+    assert body["data"] is None
+    return body["msg"]
+
+
 # ————————————————————— 样例知识点 ————————————————————— #
 @pytest.fixture
 def knowledge() -> dict[str, Any]:

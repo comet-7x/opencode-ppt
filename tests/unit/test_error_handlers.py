@@ -1,7 +1,9 @@
 """HTTP 异常处理器 + lifespan 单测。
 
 异步任务化后领域异常大多落进 task.error，但**同步路径**（校验、未来的同步端点）仍靠这些
-handler 把异常翻成干净 JSON。用一个迷你 app 直接验证映射，避免依赖具体业务端点。
+handler 把异常翻成统一信封。用一个迷你 app 直接验证映射，避免依赖具体业务端点。
+
+信封约定：HTTP 恒 200，真实状态码在 body 的 `code`，原因在 `msg`，`data` 为 null。
 """
 
 from __future__ import annotations
@@ -10,6 +12,7 @@ import httpx
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport
+from pydantic import BaseModel
 
 from app.core.context import context
 from app.core.errors import register_exception_handlers
@@ -20,6 +23,13 @@ from app.services.generator.common.errors import (
     ModelError,
     ParseError,
 )
+from tests.conftest import err_msg
+
+
+class EchoBody(BaseModel):
+    """必须定义在模块级：局部类在 `from __future__ import annotations` 下 FastAPI 解析不到。"""
+
+    n: int
 
 
 @pytest.fixture
@@ -52,7 +62,7 @@ def _client(application: FastAPI) -> httpx.AsyncClient:
 
 
 @pytest.mark.parametrize(
-    ("which", "status", "error"),
+    ("which", "code", "error"),
     [
         ("knowledge", 400, "KnowledgeError"),   # 客户端输入问题
         ("parse", 502, "ParseError"),           # 上游输出不合约
@@ -60,23 +70,34 @@ def _client(application: FastAPI) -> httpx.AsyncClient:
         ("generic", 500, "GenerationError"),    # 基类兜底
     ],
 )
-async def test_domain_errors_map_to_status_and_json(
-    mini_app: FastAPI, which: str, status: int, error: str
+async def test_domain_errors_map_to_envelope(
+    mini_app: FastAPI, which: str, code: int, error: str
 ) -> None:
     async with _client(mini_app) as c:
         r = await c.get(f"/raise/{which}")
-    assert r.status_code == status
-    body = r.json()
-    assert body["error"] == error
-    assert body["detail"]          # 带可读原因
+    assert err_msg(r, code).startswith(f"{error}: ")   # 类名 + 可读原因
 
 
 async def test_openai_error_maps_to_502(mini_app: FastAPI) -> None:
     async with _client(mini_app) as c:
         r = await c.get("/raise/upstream")
-    assert r.status_code == 502
-    assert r.json()["error"] == "ModelUpstreamError"
-    assert "模型调用失败" in r.json()["detail"]
+    assert "模型调用失败" in err_msg(r, 502)
+
+
+async def test_validation_error_maps_to_422_envelope() -> None:
+    """请求体不合法也走信封：HTTP 200 + code 422 + 逐字段可读文案。"""
+    application = FastAPI()
+    register_exception_handlers(application)
+
+    @application.post("/echo")
+    async def _echo(body: EchoBody) -> int:
+        return body.n
+
+    async with _client(application) as c:
+        r = await c.post("/echo", json={"n": "不是数字"})
+    msg = err_msg(r, 422)
+    assert "请求参数校验失败" in msg
+    assert "n" in msg
 
 
 # ————————————————————— lifespan ————————————————————— #

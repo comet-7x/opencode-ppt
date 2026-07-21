@@ -7,6 +7,7 @@ from pydantic import BaseModel
 
 from app.config import config_engine
 from app.core.context import context
+from app.schemas.response import ApiResult, BaseResponse
 
 router = APIRouter(tags=["health"])
 
@@ -17,10 +18,12 @@ class HealthResponse(BaseModel):
     provider_loaded: bool
 
 
-@router.get("/health", response_model=HealthResponse)
-def health() -> HealthResponse:
-    return HealthResponse(
-        status="ok" if context.initialized else "degraded",
-        model=config_engine.base_config.models.llm.model_name,
-        provider_loaded=context.initialized,
+@router.get("/health", response_model=BaseResponse[HealthResponse])
+def health() -> BaseResponse[HealthResponse]:
+    return ApiResult.data(
+        HealthResponse(
+            status="ok" if context.initialized else "degraded",
+            model=config_engine.base_config.models.llm.model_name,
+            provider_loaded=context.initialized,
+        )
     )

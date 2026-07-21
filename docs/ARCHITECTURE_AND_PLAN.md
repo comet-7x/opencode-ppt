@@ -10,16 +10,17 @@
 
 ## 0. 已锁定的决策
 
-| # | 决策点            | 结论                                                                                                                                                                                                                                                                                                                                                                        |
-| - | ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1 | 内部枚举语言      | **全英文键**（`choice/fill_blank/subjective`、`basic/advanced/challenge`、`new_teach/review_comprehensive/unit_summary`）；prompt 要求模型输出英文键；给人看的 md 用 `TYPE_ZH`/`DIFF_ZH` 转中文                                                                                                                                                             |
-| 2 | 教案/PPT/作业拓扑 | **分布为底 + 整合为薄编排**：每环节是独立自洽节点各出端点；PPT 全管线是薄状态机，只**组合调用**这些节点                                                                                                                                                                                                                                                         |
-| 3 | 配置              | **收敛到 `ConfigEngine` 一套**：全项目走 `config_engine.base_config.xxx`；`Settings` 只作 env 读取源喂它                                                                                                                                                                                                                                                        |
-| 4 | 代码组织          | **按产线切（feature-first）+ 每产线一个 Service 类**：`services/generator/<产线>/{logic.py, service.py}`；`service.py` = 一个服务类（`.run` + `.run_task`），依赖从**模块级 `AppContext` 单例**取（`self.context = context if context is not None else app_context`），`PptService` 组合其它服务；共享进 `common/`；`models/schemas/api` 按层 |
-| 5 | 任务态            | **统一任务运行时**：四条产线全是 `Task`（`components/task/`）；单阶段产线（教案/作业/slides）+ 多阶段产线（ppt）跑在同一 `TaskStore` 上                                                                                                                                                                                                                           |
-| 6 | 交互模式          | **全异步：提交→轮询**。每产线自己的端点：`POST /xxx`→`202 TaskRef`，`GET /xxx/{id}`→`TaskDetail`（不留同步入口，不用统一 `/tasks`）                                                                                                                                                                                                                      |
-| 7 | 会变的边界        | `KnowledgeSource`（换 DB/云）、`TaskStore`（换 Redis）都是**接口**，本版最简实现，由全局 `AppContext` 持有（`initialize()` 里构建），替换只改一处                                                                                                                                                                                                             |
-| 8 | 本版范围          | **内容管线全做**；**PPT 渲染（docker）留阶段二**                                                                                                                                                                                                                                                                                                                |
+| #  | 决策点            | 结论                                                                                                                                                                                                                                                                                                                                                                        |
+| -- | ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1  | 内部枚举语言      | **全英文键**（`choice/fill_blank/subjective`、`basic/advanced/challenge`、`new_teach/review_comprehensive/unit_summary`）；prompt 要求模型输出英文键；给人看的 md 用 `TYPE_ZH`/`DIFF_ZH` 转中文                                                                                                                                                             |
+| 2  | 教案/PPT/作业拓扑 | **分布为底 + 整合为薄编排**：每环节是独立自洽节点各出端点；PPT 全管线是薄状态机，只**组合调用**这些节点                                                                                                                                                                                                                                                         |
+| 3  | 配置              | **收敛到 `ConfigEngine` 一套**：全项目走 `config_engine.base_config.xxx`；`Settings` 只作 env 读取源喂它                                                                                                                                                                                                                                                        |
+| 4  | 代码组织          | **按产线切（feature-first）+ 每产线一个 Service 类**：`services/generator/<产线>/{logic.py, service.py}`；`service.py` = 一个服务类（`.run` + `.run_task`），依赖从**模块级 `AppContext` 单例**取（`self.context = context if context is not None else app_context`），`PptService` 组合其它服务；共享进 `common/`；`models/schemas/api` 按层 |
+| 5  | 任务态            | **统一任务运行时**：四条产线全是 `Task`（`components/task/`）；单阶段产线（教案/作业/slides）+ 多阶段产线（ppt）跑在同一 `TaskStore` 上                                                                                                                                                                                                                         |
+| 6  | 交互模式          | **全异步：提交→轮询**。每产线自己的端点：`POST /xxx/create`→`TaskRef`，`GET /xxx/get/{id}`→`TaskDetail`（不留同步入口，不用统一 `/tasks`）                                                                                                                                                                                                               |
+| 6b | 响应形状          | **统一信封 `BaseResponse{code,msg,data}`**：**HTTP 恒 200**，真实状态码写进 body 的 `code`，业务数据一律放 `data`；接口层用 `ApiResult.data/ok/error` 构造，**不 raise `HTTPException`**（唯一例外：`GET /ppt/download/{id}` 成功时回二进制文件流）                                                                                           |
+| 7  | 会变的边界        | `KnowledgeSource`（换 DB/云）、`TaskStore`（换 Redis）都是**接口**，本版最简实现，由全局 `AppContext` 持有（`initialize()` 里构建），替换只改一处                                                                                                                                                                                                             |
+| 8  | 本版范围          | **内容管线全做**；**PPT 渲染（docker）留阶段二**                                                                                                                                                                                                                                                                                                                |
 
 ---
 
@@ -69,13 +70,13 @@ flowchart TB
     subgraph CROSS["横切"]
         X1["config/ ConfigEngine (+内网绕代理)"]
         X2["core/ context(AppContext 单例) · lifespan(init/close) · errors(异常→HTTP)"]
-        X3["schemas/generator/ API DTO (task/ppt/lesson_plan/slides/homework)"]
+        X3["schemas/ response(BaseResponse 信封) · generator/ API DTO (task/ppt/lesson_plan/slides/homework)"]
     end
 ```
 
 **分层职责边界（铁律）**
 
-- **api**：极薄。POST 一行 `xxx_service.submit(req)`；GET 读全局 `context.task_store`。**不用 DI**，直接用模块级服务单例 + 全局 context。不写业务逻辑。
+- **api**：极薄。POST 一行 `return ApiResult.data(xxx_service.submit(req))`；GET 读全局 `context.task_store`。**不用 DI**，直接用模块级服务单例 + 全局 context。**一律返回 `BaseResponse` 信封，不 raise `HTTPException`**（404/409 用 `ApiResult.error(code, msg)` 返回）。不写业务逻辑。
 - **services**：**每产线一个服务类**（依赖 provider/source 构造注入）。`run` 纯用例 + `run_task` runner（管任务态与异常兜底）；**调 logic 节点，不自己调 CAMEL**。`PptService` 组合其它服务。
 - **logic**：无状态纯函数，`输入契约 → 输出契约`，内部调 CAMEL agent。可脱离 FastAPI 单测。
 - **models**：纯数据契约（Pydantic / dataclass），**无行为、无 IO**。
@@ -196,6 +197,8 @@ app/
       service.py                 # class HomeworkService(.run / .run_task)
     ppt/
       service.py                 # class PptService（多阶段 runner；组合 LP+Slides 服务；渲染留桩）
+  schemas/
+    response.py                  # ★ 统一信封 BaseResponse[T] + ApiResult（全端点共用）
   schemas/generator/
     task.py                      # TaskRef / TaskDetailBase / base_detail_fields（TaskStatus 来自 components/task）
     lesson_plan.py               # GenRequest + Result + LessonPlanTaskDetail
@@ -215,18 +218,19 @@ app/
 **端点一览**
 
 > 统一动词前缀风格：`/<产线>/create`（提交）、`/<产线>/get/{id}`（轮询）。
+> **所有端点 HTTP 恒 200**，下表"作用"列里的 404/409 指信封 `code`，不是 HTTP 状态码。
 
-| 方法+路径                                                  | 作用                                 |
-| ---------------------------------------------------------- | ------------------------------------ |
-| `GET /health`                                            | 配置就绪 + 模型已装入                |
-| `POST /lesson-plan/create` `GET /lesson-plan/get/{id}` | 教案：提交→轮询                     |
-| `POST /slides/create` `GET /slides/get/{id}`           | 逐页 slides + source.md              |
-| `POST /homework/create` `GET /homework/get/{id}`       | 作业（含 L1/L2 校验闭环）            |
-| `POST /ppt/create`                                       | PPT 全管线：建任务                   |
-| `GET /ppt/list` `GET /ppt/get/{id}`                    | 列表 / 查详情（status/stage/review） |
-| `POST /ppt/confirm/{id}`                                 | 确认门推进（approve / regenerate）   |
-| `GET /ppt/download/{id}`                                 | 下载 pptx（阶段二前 409）            |
-| `DELETE /ppt/delete/{id}`                                | 删除任务                             |
+| 方法+路径                                                  | 作用                                          |
+| ---------------------------------------------------------- | --------------------------------------------- |
+| `GET /health`                                            | 配置就绪 + 模型已装入                         |
+| `POST /lesson-plan/create` `GET /lesson-plan/get/{id}` | 教案：提交→轮询                              |
+| `POST /slides/create` `GET /slides/get/{id}`           | 逐页 slides + source.md                       |
+| `POST /homework/create` `GET /homework/get/{id}`       | 作业（含 L1/L2 校验闭环）                     |
+| `POST /ppt/create`                                       | PPT 全管线：建任务                            |
+| `GET /ppt/list` `GET /ppt/get/{id}`                    | 列表 / 查详情（status/stage/review）          |
+| `POST /ppt/confirm/{id}`                                 | 确认门推进（approve / regenerate）            |
+| `GET /ppt/download/{id}`                                 | 下载 pptx（成功=二进制流；阶段二前 code=409） |
+| `DELETE /ppt/delete/{id}`                                | 删除任务（回`ApiResult.ok`）                |
 
 ---
 
@@ -262,6 +266,24 @@ app/
 - 生命周期：lifespan 启动调 `context.initialize()`（幂等构建），关停调 `await context.close()`。
 - 替换了原先「挂 `app.state` + 逐层 `Depends`」的做法。服务默认用模块 `context`，测试可传自定义 context。
 
+### 6.0b 统一响应信封（`schemas/response.py`）
+
+```python
+class BaseResponse[T](BaseModel):
+    code: int          # 业务状态码（200/404/409/422/502…）
+    msg: str           # 可读文案
+    data: T | None     # 所有业务数据一律放这里
+```
+
+- **HTTP 状态码恒为 200**，真实状态码在 body 的 `code` —— 客户端只解析一种形状，不必分支处理。
+- 接口层三个构造器（`ApiResult`）：`data(payload)` 带数据成功、`ok(msg)` 无数据成功、`error(code, msg)` 报错。
+- **接口层不 raise `HTTPException`**：404/409 这类可预期分支直接 `return ApiResult.error(...)`。
+- 声明 `response_model=BaseResponse[TaskRef]` 之类，OpenAPI 里 `data` 的类型仍然精确（PEP 695 泛型 + pydantic 2.12 可用）。
+- 未被端点接住的异常由 `core/errors.py` 的 handler 兜成同一信封（领域异常 / openai `APIError` / 422 校验）。
+- **唯一例外**：`GET /ppt/download/{id}` 成功时必须回二进制 `FileResponse`（套不进 JSON 信封），
+  故标 `response_model=None`、返回类型 `FileResponse | BaseResponse[Any]`；**失败路径仍回信封**。
+- 测试帮手在 `tests/conftest.py`：`unwrap(r, code=200)` 取 `data`，`err_msg(r, code)` 断言错误码并取 `msg`。
+
 ### 6.1 英文枚举 ↔ 中文展示的边界
 
 - **内部**：`Question.type ∈ {choice, fill_blank, subjective}`；`Difficulty ∈ {basic, advanced, challenge}`；`plan_mode ∈ {new_teach, review_comprehensive, unit_summary}`。
@@ -288,8 +310,9 @@ app/
   `task.error`（`"{类型}: {消息}"`），客户端轮询看到 `status=failed` + 原因。
 - **领域异常**（`common/errors.py`）：`KnowledgeError`(400) / `ParseError`(502) / `ModelError`(502)，
   就近 raise，语义清晰；runner 靠它把错误分类进 `task.error`。
-- **HTTP handler**（`core/errors.py`）：领域异常 + openai `APIError` → 干净 JSON。异步化后主要覆盖
-  **同步路径**：请求体校验（422）、ppt confirm 冲突（409）。
+- **HTTP handler**（`core/errors.py`）：领域异常 + openai `APIError` + 请求校验错误 → **统一信封**
+  （`envelope(code, msg)`：HTTP 200 + body `code`）。异步化后主要覆盖**同步路径**：请求体校验（422）。
+  ppt confirm 冲突（409）由端点自己 `ApiResult.error` 返回。
 - **何时才加 try/except**：只在能「翻译外来异常 / 恢复重试 / 捕获状态」时加（如 `FileKnowledgeSource`
   翻 `FileNotFoundError→KnowledgeError`、homework `verify→regenerate` 闭环、runner 捕获进 `task.error`）；
   透传型 try/except 是噪音。
@@ -329,6 +352,7 @@ app/
 - CAMEL 对自定义模型名报 `Unknown model … context window` 警告（无害，可选消除）。
 
 ```
+
 ```
 
 ---
@@ -337,10 +361,10 @@ app/
 
 **分层与打桩边界**（关键：不同层挡在不同位置）
 
-| 目录 | 挡在哪 | 覆盖什么 |
-| --- | --- | --- |
-| `tests/unit/` | 完全不碰模型/FastAPI | 纯函数与契约：选点排序、分值回填、L2 检索、掩码/答案、markdown 渲染、任务存储 CRUD、schema 校验器、`BaseGenService` 契约、异常→HTTP 映射 |
-| `tests/integration/` | **只换掉 `ChatAgent`（模型调用）** | api→service→logic→JSON 解析→渲染→任务态 **全链路真跑** |
+| 目录                   | 挡在哪                                     | 覆盖什么                                                                                                                                    |
+| ---------------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `tests/unit/`        | 完全不碰模型/FastAPI                       | 纯函数与契约：选点排序、分值回填、L2 检索、掩码/答案、markdown 渲染、任务存储 CRUD、schema 校验器、`BaseGenService` 契约、异常→HTTP 映射 |
+| `tests/integration/` | **只换掉 `ChatAgent`（模型调用）** | api→service→logic→JSON 解析→渲染→任务态**全链路真跑**                                                                            |
 
 > ⚠️ 早期 `test_api_wiring.py` 在**服务层**打桩（override `run`），会把业务逻辑整个跳过——
 > 那只能算"接线测试"。真正的集成测试必须把打桩边界下移到模型调用（`conftest.FakeChatAgent`），

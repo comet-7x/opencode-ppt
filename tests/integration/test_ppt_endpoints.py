@@ -12,6 +12,7 @@ from app.components.task import InMemoryTaskStore, TaskStatus
 from app.main import app
 from app.schemas.generator.ppt import PptStage
 from app.services.generator.ppt.service import PptService
+from tests.conftest import err_msg, unwrap
 
 _KN = {"course": {"title": "海洋管理概论"}, "points": [
     {"id": "K001", "name": "概念", "definition": "d"}]}
@@ -28,9 +29,9 @@ async def test_list_filters_to_ppt_kind_only(
     fake_agent.reset(default="不是JSON")   # 让它快速失败即可，本用例只关心列表
     task_store.create("lesson_plan")       # 混入别的 kind，不应出现在 /ppt/list
     async with _client() as c:
-        job = (await c.post("/ppt/create", json=_CREATE)).json()["task_id"]
+        job = unwrap(await c.post("/ppt/create", json=_CREATE))["task_id"]
         await task_store.wait_all()
-        rows = (await c.get("/ppt/list")).json()
+        rows = unwrap(await c.get("/ppt/list"))
     assert [r["task_id"] for r in rows] == [job]
 
 
@@ -39,11 +40,10 @@ async def test_download_409_before_artifact_exists(
 ) -> None:
     fake_agent.reset(default="不是JSON")
     async with _client() as c:
-        job = (await c.post("/ppt/create", json=_CREATE)).json()["task_id"]
+        job = unwrap(await c.post("/ppt/create", json=_CREATE))["task_id"]
         await task_store.wait_all()
         r = await c.get(f"/ppt/download/{job}")
-    assert r.status_code == 409
-    assert "尚无产物" in r.json()["detail"]
+    assert "尚无产物" in err_msg(r, 409)
 
 
 async def test_download_serves_file_when_result_present(
@@ -70,11 +70,11 @@ async def test_download_serves_file_when_result_present(
 async def test_delete_then_404(task_store: InMemoryTaskStore, fake_agent: Any) -> None:
     fake_agent.reset(default="不是JSON")
     async with _client() as c:
-        job = (await c.post("/ppt/create", json=_CREATE)).json()["task_id"]
+        job = unwrap(await c.post("/ppt/create", json=_CREATE))["task_id"]
         await task_store.wait_all()
-        assert (await c.delete(f"/ppt/delete/{job}")).status_code == 204
-        assert (await c.get(f"/ppt/get/{job}")).status_code == 404
-        assert (await c.delete(f"/ppt/delete/{job}")).status_code == 404
+        assert unwrap(await c.delete(f"/ppt/delete/{job}")) is None
+        err_msg(await c.get(f"/ppt/get/{job}"), 404)
+        err_msg(await c.delete(f"/ppt/delete/{job}"), 404)
 
 
 async def test_confirm_when_not_at_gate_returns_409(
@@ -82,22 +82,21 @@ async def test_confirm_when_not_at_gate_returns_409(
 ) -> None:
     fake_agent.reset(default="不是JSON")   # slides 解析失败 → FAILED，不在确认门
     async with _client() as c:
-        job = (await c.post("/ppt/create", json=_CREATE)).json()["task_id"]
+        job = unwrap(await c.post("/ppt/create", json=_CREATE))["task_id"]
         await task_store.wait_all()
         r = await c.post(f"/ppt/confirm/{job}", json={"action": "approve"})
-    assert r.status_code == 409
-    assert "不在确认门" in r.json()["detail"]
+    assert "不在确认门" in err_msg(r, 409)
 
 
 async def test_cross_kind_access_is_404(task_store: InMemoryTaskStore) -> None:
     """拿别的 kind 的 task_id 访问 /ppt/* 必须 404，不能串号。"""
     other = task_store.create("homework")
     async with _client() as c:
-        assert (await c.get(f"/ppt/get/{other.task_id}")).status_code == 404
-        assert (await c.delete(f"/ppt/delete/{other.task_id}")).status_code == 404
-        assert (await c.get(f"/ppt/download/{other.task_id}")).status_code == 404
+        err_msg(await c.get(f"/ppt/get/{other.task_id}"), 404)
+        err_msg(await c.delete(f"/ppt/delete/{other.task_id}"), 404)
+        err_msg(await c.get(f"/ppt/download/{other.task_id}"), 404)
         r = await c.post(f"/ppt/confirm/{other.task_id}", json={"action": "approve"})
-    assert r.status_code == 404
+    err_msg(r, 404)
 
 
 async def test_result_stored_as_dict_is_coerced(task_store: InMemoryTaskStore) -> None:
@@ -109,7 +108,7 @@ async def test_result_stored_as_dict_is_coerced(task_store: InMemoryTaskStore) -
     task_store.update(task, status=TaskStatus.SUCCEEDED,
                       result={"pptx_path": "/fake/a.pptx", "pptx_size_kb": 12})
     async with _client() as c:
-        d = (await c.get(f"/ppt/get/{task.task_id}")).json()
+        d = unwrap(await c.get(f"/ppt/get/{task.task_id}"))
     assert d["result"] == {"pptx_path": "/fake/a.pptx", "pptx_size_kb": 12}
 
 
@@ -123,7 +122,7 @@ async def test_review_is_null_when_awaiting_at_render_stage(
                              stage=PptStage.RENDER)
     task_store.update(task, status=TaskStatus.AWAITING_REVIEW)
     async with _client() as c:
-        d = (await c.get(f"/ppt/get/{task.task_id}")).json()
+        d = unwrap(await c.get(f"/ppt/get/{task.task_id}"))
     assert d["review"] is None
 
 
@@ -133,9 +132,9 @@ async def test_lesson_plan_stage_failure_is_captured(
     """教案阶段自身失败（模型空响应）也要被兜进 task.error，停在 lesson_plan 阶段。"""
     fake_agent.reset(empty=True)
     async with _client() as c:
-        job = (await c.post("/ppt/create", json=_CREATE)).json()["task_id"]
+        job = unwrap(await c.post("/ppt/create", json=_CREATE))["task_id"]
         await task_store.wait_all()
-        d = (await c.get(f"/ppt/get/{job}")).json()
+        d = unwrap(await c.get(f"/ppt/get/{job}"))
     assert d["status"] == "failed" and d["stage"] == "lesson_plan"
     assert "ModelError" in d["error"]
 

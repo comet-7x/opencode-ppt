@@ -16,6 +16,7 @@ from httpx import ASGITransport
 
 from app.components.task import InMemoryTaskStore
 from app.main import app
+from tests.conftest import err_msg, unwrap
 
 _KN = {
     "course": {"title": "海洋管理概论", "profile": {"授课对象": "本科生"}, "objectives": []},
@@ -38,13 +39,10 @@ def _client() -> httpx.AsyncClient:
 async def _submit_and_poll(path: str, body: dict, store: InMemoryTaskStore) -> dict[str, Any]:
     """提交 → 等后台跑完 → 取详情。"""
     async with _client() as c:
-        r = await c.post(f"/{path}/create", json=body)
-        assert r.status_code == 202, r.text
-        task_id = r.json()["task_id"]
+        task_id = unwrap(await c.post(f"/{path}/create", json=body))["task_id"]
         await store.wait_all()
         r = await c.get(f"/{path}/get/{task_id}")
-    assert r.status_code == 200
-    return r.json()
+    return unwrap(r)
 
 
 # ————————————————————— 教案：全栈 ————————————————————— #
@@ -233,9 +231,10 @@ async def test_empty_model_response_lands_as_model_error(
 
 @pytest.mark.parametrize("path", ["lesson-plan", "slides", "homework"])
 async def test_get_unknown_task_404(path: str, task_store: InMemoryTaskStore) -> None:
+    """不存在的 id：HTTP 仍是 200，业务码 404 在信封里。"""
     async with _client() as c:
         r = await c.get(f"/{path}/get/nope")
-    assert r.status_code == 404
+    assert err_msg(r, 404).endswith("nope 不存在")
 
 
 @pytest.mark.parametrize("path", ["lesson-plan", "slides", "homework"])
@@ -244,7 +243,7 @@ async def test_cross_kind_task_id_is_404(path: str, task_store: InMemoryTaskStor
     other = task_store.create("ppt")
     async with _client() as c:
         r = await c.get(f"/{path}/get/{other.task_id}")
-    assert r.status_code == 404
+    err_msg(r, 404)
 
 
 async def test_bad_knowledge_path_lands_as_knowledge_error(
