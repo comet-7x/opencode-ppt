@@ -9,8 +9,7 @@ from fastapi import APIRouter, HTTPException
 
 from app.core.context import context
 from app.schemas.generator.lesson_plan import LessonPlanGenRequest, LessonPlanTaskDetail
-from app.schemas.generator.task import TaskRef
-from app.services.generator.common.task import base_detail_fields
+from app.schemas.generator.task import TaskRef, base_detail_fields
 from app.services.generator.lesson_plan.service import lesson_plan_service
 
 router = APIRouter(prefix="/lesson-plan", tags=["lesson_plan"])

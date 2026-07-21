@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+from app.components.task import Task, TaskStore
 from app.models.generator.slides import SlideContent
 from app.schemas.generator.slides import SlidesResult
 from app.schemas.generator.task import TaskStatus
 from app.services.generator.common.service import BaseGenService
-from app.services.generator.common.task import Task, TaskStore
 from app.services.generator.slides.logic import assemble_source_md, generate_slides
 
 

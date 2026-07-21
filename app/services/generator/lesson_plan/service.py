@@ -9,12 +9,12 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.components.task import Task, TaskStore
 from app.models.generator.lesson_plan import LessonPlanResponse
 from app.schemas.generator.lesson_plan import LessonPlanResult
 from app.schemas.generator.task import TaskStatus
 from app.services.generator.common.knowledge import resolve_knowledge
 from app.services.generator.common.service import BaseGenService
-from app.services.generator.common.task import Task, TaskStore
 from app.services.generator.lesson_plan.logic import build_request, generate_lesson_plan
 
 

@@ -1,11 +1,7 @@
-"""从配置构建 CAMEL 模型（OpenAI 兼容端点），按温度缓存。
+"""LLM 适配器：从配置构建 CAMEL 模型（OpenAI 兼容端点），按温度缓存。
 
-原 lifespan 把温度写死 0.1 并分 stream/unstream 两个实例；这里改成一个 `ModelProvider`：
-持有 LLM 连接参数，`get(temperature)` 按需构建并缓存。不同环节用不同温度
-（教案 0.1 / slides 0.2 / 作业 0.2 / 校验 0.1），各自缓存一个实例。
-
-lifespan 在启动时建一个 ModelProvider 存进 app.state；logic 节点通过 service 拿到
-对应温度的模型来调 CAMEL。配置来自唯一真相 ConfigEngine。
+技术能力组件，与业务领域无关：任何领域要调 LLM 都用它。
+不同环节用不同温度（教案 0.1 / slides 0.2 / 作业 0.2 / 校验 0.1），各自缓存一个实例。
 """
 
 from __future__ import annotations
@@ -19,7 +15,7 @@ from app.config import config_engine
 
 
 class ModelProvider:
-    """按温度缓存 CAMEL 模型。无状态可共享（进程内单例，放 app.state）。"""
+    """按温度缓存 CAMEL 模型。无状态可共享（进程内单例，放 AppContext）。"""
 
     def __init__(self, *, model_name: str, base_url: str, api_key: str) -> None:
         self._model_name = model_name

@@ -8,11 +8,11 @@
 
 from __future__ import annotations
 
+from app.components.llm import ModelProvider
+from app.components.task import InMemoryTaskStore, TaskStore
 from app.config import config_engine
 from app.config.cfg import ConfigEngine
-from app.services.generator.common.camel_model import ModelProvider
 from app.services.generator.common.knowledge import FileKnowledgeSource, KnowledgeSource
-from app.services.generator.common.task import InMemoryTaskStore, TaskStore
 
 
 class AppContext:

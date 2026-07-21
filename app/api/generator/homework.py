@@ -6,8 +6,7 @@ from fastapi import APIRouter, HTTPException
 
 from app.core.context import context
 from app.schemas.generator.homework import HomeworkGenRequest, HomeworkTaskDetail
-from app.schemas.generator.task import TaskRef
-from app.services.generator.common.task import base_detail_fields
+from app.schemas.generator.task import TaskRef, base_detail_fields
 from app.services.generator.homework.service import homework_service
 
 router = APIRouter(prefix="/homework", tags=["homework"])

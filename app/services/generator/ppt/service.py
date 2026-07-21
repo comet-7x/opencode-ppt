@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+from app.components.task import Task, TaskStore
 from app.core.context import AppContext
 from app.core.context import context as app_context
 from app.schemas.generator.ppt import (
@@ -18,7 +19,6 @@ from app.schemas.generator.ppt import (
 )
 from app.schemas.generator.task import TaskRef, TaskStatus
 from app.services.generator.common.knowledge import resolve_knowledge
-from app.services.generator.common.task import Task, TaskStore
 from app.services.generator.lesson_plan.service import LessonPlanService
 from app.services.generator.slides.logic import assemble_source_md
 from app.services.generator.slides.service import SlidesService

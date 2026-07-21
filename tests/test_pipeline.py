@@ -11,6 +11,7 @@ from typing import Any
 
 import pytest
 
+from app.components.task import InMemoryTaskStore, Task
 from app.models.generator.lesson_plan import LessonPlanResponse
 from app.models.generator.slides import SlideContent, SlideLayout
 from app.schemas.generator.ppt import (
@@ -20,7 +21,6 @@ from app.schemas.generator.ppt import (
     PptStage,
 )
 from app.schemas.generator.task import TaskStatus
-from app.services.generator.common.task import InMemoryTaskStore, Task
 from app.services.generator.lesson_plan.service import LessonPlanService
 from app.services.generator.ppt.service import PptService
 from app.services.generator.slides.service import SlidesService

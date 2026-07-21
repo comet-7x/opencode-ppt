@@ -1,22 +1,20 @@
 """通用任务 API 契约（所有产线共用）。
 
+`TaskStatus` 的规范定义在 `components/task`（任务运行时），这里 import 过来供 DTO 使用，
+外部仍可 `from app.schemas.generator.task import TaskStatus`。
 各产线返回自己的 TaskDetail 子类（result 字段类型不同）；共同字段在此。
 """
 
 from __future__ import annotations
 
 from datetime import datetime
-from enum import StrEnum
+from typing import Any
 
 from pydantic import BaseModel
 
+from app.components.task import Task, TaskStatus
 
-class TaskStatus(StrEnum):
-    PENDING = "pending"                  # 已创建，待执行
-    RUNNING = "running"                  # 执行中
-    AWAITING_REVIEW = "awaiting_review"  # 到确认门，等人确认（多阶段产品用）
-    SUCCEEDED = "succeeded"              # 完成，result 就绪
-    FAILED = "failed"                    # 出错，error 有原因
+__all__ = ["TaskDetailBase", "TaskRef", "TaskStatus", "base_detail_fields"]
 
 
 class TaskRef(BaseModel):
@@ -37,3 +35,16 @@ class TaskDetailBase(BaseModel):
     error: str | None = None
     created_at: datetime
     updated_at: datetime
+
+
+def base_detail_fields(task: Task) -> dict[str, Any]:
+    """抽出 TaskDetailBase 的公共字段，供各产线端点拼自己的 TaskDetail。"""
+    return {
+        "task_id": task.task_id,
+        "kind": task.kind,
+        "status": task.status,
+        "stage": task.stage,
+        "error": task.error,
+        "created_at": task.created_at,
+        "updated_at": task.updated_at,
+    }

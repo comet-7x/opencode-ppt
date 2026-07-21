@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.components.task import Task, TaskStore
 from app.schemas.generator.homework import HomeworkResult
 from app.schemas.generator.task import TaskStatus
 from app.services.generator.common.knowledge import all_points, resolve_knowledge
 from app.services.generator.common.service import BaseGenService
-from app.services.generator.common.task import Task, TaskStore
 from app.services.generator.homework.logic import (
     build_request,
     generate_homework,

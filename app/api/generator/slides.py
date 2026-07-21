@@ -6,8 +6,7 @@ from fastapi import APIRouter, HTTPException
 
 from app.core.context import context
 from app.schemas.generator.slides import SlidesGenRequest, SlidesTaskDetail
-from app.schemas.generator.task import TaskRef
-from app.services.generator.common.task import base_detail_fields
+from app.schemas.generator.task import TaskRef, base_detail_fields
 from app.services.generator.slides.service import slides_service
 
 router = APIRouter(prefix="/slides", tags=["slides"])

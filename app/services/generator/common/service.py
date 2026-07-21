@@ -8,10 +8,10 @@ from __future__ import annotations
 
 from typing import Any, ClassVar
 
+from app.components.task import Task, TaskStore
 from app.core.context import AppContext
 from app.core.context import context as app_context
 from app.schemas.generator.task import TaskRef
-from app.services.generator.common.task import Task, TaskStore
 
 
 class BaseGenService:

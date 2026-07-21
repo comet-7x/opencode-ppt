@@ -9,6 +9,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 
+from app.components.task import Task
 from app.core.context import context
 from app.schemas.generator.ppt import (
     ConfirmRequest,
@@ -18,8 +19,7 @@ from app.schemas.generator.ppt import (
     PptTaskDetail,
     ReviewArtifact,
 )
-from app.schemas.generator.task import TaskRef, TaskStatus
-from app.services.generator.common.task import Task, base_detail_fields
+from app.schemas.generator.task import TaskRef, TaskStatus, base_detail_fields
 from app.services.generator.ppt.service import ppt_service
 
 router = APIRouter(prefix="/ppt", tags=["ppt"])

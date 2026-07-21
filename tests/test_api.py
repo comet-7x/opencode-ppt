@@ -17,12 +17,12 @@ import app.api.generator.lesson_plan as lp_router
 import app.api.generator.ppt as ppt_router
 import app.api.generator.slides as sl_router
 import app.services.generator.lesson_plan.service as lp_service_mod
+from app.components.task import InMemoryTaskStore
 from app.core.context import context
 from app.main import app
 from app.models.generator.lesson_plan import LessonPlanResponse
 from app.models.generator.slides import SlideContent, SlideLayout
 from app.schemas.generator.homework import HomeworkResult
-from app.services.generator.common.task import InMemoryTaskStore
 from app.services.generator.homework.service import HomeworkService
 from app.services.generator.lesson_plan.service import LessonPlanService
 from app.services.generator.ppt.service import PptService
