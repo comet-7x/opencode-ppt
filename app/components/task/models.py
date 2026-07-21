@@ -18,6 +18,15 @@ class TaskStatus(StrEnum):
     AWAITING_REVIEW = "awaiting_review"  # 到确认门，等人确认（多阶段产品用）
     SUCCEEDED = "succeeded"              # 完成，result 就绪
     FAILED = "failed"                    # 出错，error 有原因
+    CANCELLED = "cancelled"              # 被调用方主动取消
+
+    @property
+    def is_terminal(self) -> bool:
+        """终态：不会再变，也不能再被取消/推进。"""
+        return self in _TERMINAL
+
+
+_TERMINAL = frozenset({TaskStatus.SUCCEEDED, TaskStatus.FAILED, TaskStatus.CANCELLED})
 
 
 def utcnow() -> datetime:

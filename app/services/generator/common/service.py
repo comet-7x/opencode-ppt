@@ -41,7 +41,7 @@ class BaseGenService(ABC):
         """接口层一行调用：创建任务 + 后台推进 + 返回引用。"""
         store = self.context.task_store
         task = store.create(self.KIND, request=request)
-        store.spawn(self.run_task(task, store))
+        store.spawn(task, self.run_task(task, store))
         return TaskRef(task_id=task.task_id, kind=task.kind, status=task.status)
 
     @abstractmethod

@@ -14,7 +14,7 @@ import httpx
 import pytest
 from httpx import ASGITransport
 
-from app.components.task import InMemoryTaskStore
+from app.components.task import InMemoryTaskStore, TaskStatus
 from app.main import app
 from tests.conftest import err_msg, unwrap
 
@@ -254,3 +254,50 @@ async def test_bad_knowledge_path_lands_as_knowledge_error(
     detail = await _submit_and_poll("lesson-plan", body, task_store)
     assert detail["status"] == "failed"
     assert "KnowledgeError" in detail["error"]
+
+
+# ————————————————————— 主动取消 ————————————————————— #
+@pytest.mark.parametrize(
+    ("path", "body"),
+    [
+        ("lesson-plan", _BODY),
+        ("slides", {"lesson_plan_md": "# x"}),
+        ("homework", {**_BODY, "verify": False}),
+    ],
+)
+async def test_cancel_stops_a_running_task(
+    task_store: InMemoryTaskStore, fake_agent: Any, path: str, body: dict
+) -> None:
+    """前端下停止信号 → 任务打成 cancelled，且模型调用被掐在半路。"""
+    fake_agent.reset(hang=True)          # 让 runner 永远停在模型调用这个 await 点
+
+    async with _client() as c:
+        task_id = unwrap(await c.post(f"/{path}/create", json=body))["task_id"]
+        await fake_agent.called.wait()   # 确定性地等到"已进模型调用"
+        detail = unwrap(await c.post(f"/{path}/cancel/{task_id}"))
+        assert detail["status"] == "cancelled"
+
+        await task_store.wait_all()
+        detail = unwrap(await c.get(f"/{path}/get/{task_id}"))
+
+    assert detail["status"] == "cancelled"
+    assert detail["result"] is None          # 没跑完，没有产物
+
+
+@pytest.mark.parametrize("path", ["lesson-plan", "slides", "homework"])
+async def test_cancel_is_409_once_task_is_terminal(
+    task_store: InMemoryTaskStore, path: str
+) -> None:
+    """任务已跑完（终态）就不能再取消。"""
+    task = task_store.create(path.replace("-", "_"))
+    task_store.update(task, status=TaskStatus.SUCCEEDED)
+    async with _client() as c:
+        r = await c.post(f"/{path}/cancel/{task.task_id}")
+    assert "无法取消" in err_msg(r, 409)
+
+
+@pytest.mark.parametrize("path", ["lesson-plan", "slides", "homework"])
+async def test_cancel_unknown_task_is_404(path: str, task_store: InMemoryTaskStore) -> None:
+    async with _client() as c:
+        r = await c.post(f"/{path}/cancel/nope")
+    err_msg(r, 404)

@@ -1,8 +1,11 @@
-"""通用任务运行时单测：CRUD、按 kind 过滤、更新时间戳、后台推进。"""
+"""通用任务运行时单测：CRUD、按 kind 过滤、更新时间戳、后台推进、取消。"""
 
 from __future__ import annotations
 
 import asyncio
+import logging
+
+import pytest
 
 from app.components.task import InMemoryTaskStore, TaskStatus
 
@@ -77,8 +80,8 @@ async def test_spawn_runs_in_background_and_wait_all_drains() -> None:
         await asyncio.sleep(0)
         done.append(tag)
 
-    store.spawn(work("a"))
-    store.spawn(work("b"))
+    store.spawn(store.create("k"), work("a"))
+    store.spawn(store.create("k"), work("b"))
     await store.wait_all()
     assert sorted(done) == ["a", "b"]
 
@@ -92,19 +95,104 @@ async def test_wait_all_also_drains_tasks_spawned_by_tasks() -> None:
         done.append("inner")
 
     async def outer() -> None:
-        store.spawn(inner())
+        store.spawn(store.create("k"), inner())
         done.append("outer")
 
-    store.spawn(outer())
+    store.spawn(store.create("k"), outer())
     await store.wait_all()
     assert sorted(done) == ["inner", "outer"]
 
 
-async def test_spawn_swallows_task_exception_without_breaking_wait_all() -> None:
+async def test_spawn_swallows_task_exception_without_breaking_wait_all(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """runner 自身的 bug 逃逸出来时：不打断 wait_all，但必须被 done-callback 记下来。"""
     store = InMemoryTaskStore()
 
     async def boom() -> None:
         raise RuntimeError("背景任务炸了")
 
-    store.spawn(boom())
-    await store.wait_all()  # 不应把异常抛给调用方
+    with caplog.at_level(logging.ERROR, logger="app.task"):
+        store.spawn(store.create("k"), boom())
+        await store.wait_all()  # 不应把异常抛给调用方
+    assert "背景任务炸了" in caplog.text
+
+
+# ————————————————————— 取消 ————————————————————— #
+async def test_cancel_running_task_stops_the_coroutine() -> None:
+    store = InMemoryTaskStore()
+    task = store.create("k")
+    reached_end = False
+
+    async def long_work() -> None:
+        nonlocal reached_end
+        await asyncio.sleep(10)      # 取消在这个 await 点生效
+        reached_end = True
+
+    store.spawn(task, long_work())
+    await asyncio.sleep(0)           # 让协程真正跑起来并挂在 sleep 上
+    assert store.cancel(task.task_id) is True
+    await store.wait_all()
+
+    assert reached_end is False
+    assert task.status is TaskStatus.CANCELLED
+    assert task.error == "任务被主动取消"
+
+
+async def test_cancel_at_review_gate_has_no_coroutine_but_still_marks_cancelled() -> None:
+    """停在确认门时后台协程早已结束——没得可掐，但业务状态照样要作废。"""
+    store = InMemoryTaskStore()
+    task = store.create("ppt")
+    store.update(task, status=TaskStatus.AWAITING_REVIEW)
+
+    assert store.cancel(task.task_id) is True
+    assert task.status is TaskStatus.CANCELLED
+
+
+def test_cancel_is_rejected_for_terminal_and_missing_tasks() -> None:
+    store = InMemoryTaskStore()
+    for terminal in (TaskStatus.SUCCEEDED, TaskStatus.FAILED, TaskStatus.CANCELLED):
+        task = store.create("k")
+        store.update(task, status=terminal)
+        assert store.cancel(task.task_id) is False
+        assert task.status is terminal      # 状态没被改写
+    assert store.cancel("nope") is False
+
+
+async def test_cancel_all_returns_count_of_actually_cancelled() -> None:
+    store = InMemoryTaskStore()
+    store.create("k")                                   # pending → 可取消
+    store.update(store.create("k"), status=TaskStatus.RUNNING)   # 可取消
+    store.update(store.create("k"), status=TaskStatus.SUCCEEDED)  # 已终态，跳过
+
+    assert store.cancel_all() == 2
+    assert [t.status for t in store.list()].count(TaskStatus.CANCELLED) == 2
+
+
+async def test_delete_also_kills_the_running_coroutine() -> None:
+    """删任务后协程不该继续跑着更新一个已被摘掉的 Task。"""
+    store = InMemoryTaskStore()
+    task = store.create("k")
+    reached_end = False
+
+    async def long_work() -> None:
+        nonlocal reached_end
+        await asyncio.sleep(10)
+        reached_end = True
+
+    store.spawn(task, long_work())
+    await asyncio.sleep(0)
+    assert store.delete(task.task_id) is True
+    await store.wait_all()
+    assert reached_end is False
+
+
+def test_is_terminal_covers_exactly_the_end_states() -> None:
+    assert [s.is_terminal for s in TaskStatus] == [
+        False,   # pending
+        False,   # running
+        False,   # awaiting_review
+        True,    # succeeded
+        True,    # failed
+        True,    # cancelled
+    ]

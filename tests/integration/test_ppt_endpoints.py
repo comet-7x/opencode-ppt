@@ -168,3 +168,50 @@ async def test_confirm_at_render_stage_has_no_gate(task_store: InMemoryTaskStore
     task_store.update(task, status=TaskStatus.AWAITING_REVIEW)  # 人为造出"渲染阶段却在等确认"
     with pytest.raises(ValueError, match="无确认门"):
         svc.confirm(task, task_store, ConfirmRequest())
+
+
+# ————————————————————— 主动取消 ————————————————————— #
+async def test_cancel_at_review_gate_blocks_confirm(
+    task_store: InMemoryTaskStore, fake_agent: Any
+) -> None:
+    """停在确认门的任务被取消后，confirm 必须拒绝续跑（否则等于取消无效）。"""
+    slides = '```json\n{"slides":[{"index":1,"title":"封面","layout":"cover"}]}\n```'
+    fake_agent.reset(replies=["# 教案", slides])
+
+    async with _client() as c:
+        job = unwrap(await c.post("/ppt/create", json=_CREATE))["task_id"]
+        await task_store.wait_all()
+        assert unwrap(await c.get(f"/ppt/get/{job}"))["status"] == "awaiting_review"
+
+        assert unwrap(await c.post(f"/ppt/cancel/{job}"))["status"] == "cancelled"
+        r = await c.post(f"/ppt/confirm/{job}", json={"action": "approve"})
+
+    assert "不在确认门" in err_msg(r, 409)
+
+
+async def test_cancel_mid_flight_stops_the_pipeline(
+    task_store: InMemoryTaskStore, fake_agent: Any
+) -> None:
+    fake_agent.reset(hang=True)
+    async with _client() as c:
+        job = unwrap(await c.post("/ppt/create", json=_CREATE))["task_id"]
+        await fake_agent.called.wait()
+        assert unwrap(await c.post(f"/ppt/cancel/{job}"))["status"] == "cancelled"
+        await task_store.wait_all()
+        d = unwrap(await c.get(f"/ppt/get/{job}"))
+
+    assert d["status"] == "cancelled"
+    assert d["stage"] == "lesson_plan"     # 停在被掐断的那个阶段
+    assert d["result"] is None
+
+
+async def test_cancel_unknown_or_terminal_ppt_job(
+    task_store: InMemoryTaskStore, fake_agent: Any
+) -> None:
+    fake_agent.reset(default="不是JSON")   # slides 解析失败 → FAILED（终态）
+    async with _client() as c:
+        err_msg(await c.post("/ppt/cancel/nope"), 404)
+        job = unwrap(await c.post("/ppt/create", json=_CREATE))["task_id"]
+        await task_store.wait_all()
+        r = await c.post(f"/ppt/cancel/{job}")
+    assert "无法取消" in err_msg(r, 409)

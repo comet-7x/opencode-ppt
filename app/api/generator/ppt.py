@@ -92,6 +92,19 @@ async def confirm_job(job_id: str, req: ConfirmRequest) -> BaseResponse[PptTaskD
     return ApiResult.data(_detail(task))
 
 
+@router.post("/cancel/{job_id}", response_model=BaseResponse[PptTaskDetail])
+def cancel_job(job_id: str) -> BaseResponse[PptTaskDetail]:
+    """主动中止：跑到一半则掐掉后台协程；停在确认门则直接作废（confirm 随后会拒绝）。"""
+    task = _find(job_id)
+    if task is None:
+        return _not_found(job_id)
+    if not context.task_store.cancel(job_id):
+        return ApiResult.error(
+            status.HTTP_409_CONFLICT, f"任务已是终态（status={task.status.value}），无法取消"
+        )
+    return ApiResult.data(_detail(task))
+
+
 @router.get("/download/{job_id}", response_model=None)
 def download_pptx(job_id: str) -> FileResponse | BaseResponse[Any]:
     """成功时直接回二进制文件流（无法套信封）；失败时回信封。"""

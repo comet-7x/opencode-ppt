@@ -124,14 +124,82 @@ flowchart LR
 ```
 Task            task_id · kind · request · status · stage
                 · context(runner 中间态) · result(最终产物) · review(确认门产物) · error · 时间戳
-TaskStore(ABC)  create / get / list(kind?) / update / delete / spawn
-InMemoryTaskStore   进程内 dict + asyncio.create_task（+ wait_all 供测试/优雅关停）
+TaskStatus      pending / running / awaiting_review / succeeded / failed / cancelled
+                （后三个是终态：`status.is_terminal`）
+TaskStore(ABC)  create / get / list(kind?) / update / delete / spawn(task, coro) / cancel(task_id)
+InMemoryTaskStore   进程内 dict + asyncio.create_task（+ cancel_all / wait_all 供关停与测试）
 ```
 
 - **单阶段产线**（教案/作业/slides）：runner = 服务类的 `run_task` 方法，跑完把产物放 `result`、状态置 `SUCCEEDED`；出错落 `error` + `FAILED`。
 - **多阶段产线**（ppt）：runner = `PptService`（状态机），用 `context` 存中间态（`lesson_plan_md`/`slides`/`source_markdown`）、`review` 给确认门、`stage` 记当前阶段。
 - API 交互：`POST` 建任务 + `store.spawn(runner)` 后台推进 → 立即返回 `TaskRef`；`GET /{id}` 轮询取 `TaskDetail`（`SUCCEEDED` 时带 `result`）。
 - 各产线返回自己的 `TaskDetail` 子类（`result` 类型不同），公共字段来自 `TaskDetailBase` + `base_detail_fields()`。
+
+### 3.1 取消（`POST /<产线>/cancel/{id}`）
+
+前端下停止信号即可中止某个特定任务。
+
+**机制：`cancel()` 只做三件事，没有第四件**
+
+```python
+task = self._tasks.get(task_id)
+if task is None or task.status.is_terminal: return False
+self._cancel_bg(task_id)                        # ① asyncio.Task.cancel()
+self.update(task, status=CANCELLED, ...)        # ② 同步改业务状态
+return True
+```
+
+① **不是「杀死协程」，而是「往协程当前挂起的那个 `await` 点里扔一个 `CancelledError`」**。
+协程从该 await 点原地抛异常，再像普通异常一样一路向上 unwind。
+**`await` 点是唯一的可取消位置** —— 这是理解下面全部行为的钥匙。
+
+② 业务状态是**同步**改的，所以调用方（前端轮询）立刻能查到 `cancelled`，
+不必等协程真的停下来。因此 `cancel` 的语义是「**请求**取消」而非「保证已停」。
+
+**取消的作用范围（实测结论）**
+
+| 场景                                          | 结果                                                          |
+| --------------------------------------------- | ------------------------------------------------------------- |
+| 协程挂在 `await` 上（模型调用 / 网络 IO）     | **立即中断**，其后代码一行不执行                              |
+| 内联 `await` 调下去的嵌套协程                 | **整条链一起 unwind**（`_run_lesson_plan_stage` → `_run_slides_stage` 即此形态） |
+| 同一 store 里的**其它**任务                   | **不受影响**（一个业务 Task ↔ 一个 asyncio.Task）             |
+| 协程还没被调度过一次（提交后立刻取消）        | 协程**一次都不执行**                                          |
+| 正在跑一段**没有 `await`** 的代码             | **完全打不断**，见下                                          |
+
+> 所以「取消」**不等于**「进行中的所有任务都被终止」，而是「那一个 asyncio.Task 及其整条 await 链被终止」。
+
+**⚠️ 三个必须记住的坑**
+
+1. **没有 `await` 的代码段打不断。** 纯计算，或 `time.sleep` / 同步 `requests` / 同步 docker SDK
+   这类**阻塞调用**，单线程事件循环被它霸占着，连「受理你这个取消请求」都排不上队。
+   实测：一段 ~0.9s 的阻塞代码，取消请求被拖了 0.94s 才生效，且该段代码**完整跑完**。
+
+2. **`except BaseException` / 裸 `except:` 会把取消吞掉。** `CancelledError` 自 3.8 起继承
+   `BaseException`，被吞后任务会「取消不掉」——状态是 `CANCELLED`，协程却继续跑完。
+   我们的 runner **一律用 `except Exception`**，接不到 `CancelledError`，因此取消也不会被误记成 `FAILED`。
+   逃逸出来的异常由 `_on_done` done-callback 兜底记日志（接住的是 **runner 自身的 bug**，
+   否则 asyncio 只在 GC 时打一句 "Task exception was never retrieved"，极难定位）。
+
+3. **停在确认门的任务没有活着的协程**（后台协程早已结束在等人），此时 `cancel` 只改状态；
+   `PptService.confirm` 因 `status != AWAITING_REVIEW` 而拒绝续跑——取消才真正生效。
+
+**边界与其它**
+
+- `spawn(task, coro)` **必须带上业务 task**，store 才能维护 `task_id → asyncio.Task` 映射定位协程。
+- 已是终态 → `cancel` 返回 `False`，端点回 code=409。
+- **模型请求若已发出**：取消只是客户端断开连接，上游可能已在生成、甚至已计费——无法撤回，
+  只保证不再等它的结果、不写进 `task.result`。
+- `delete()` 会先掐掉在跑的协程；`AppContext.close()` 关停时对内存 store 调 `cancel_all()`
+  （**换 RedisTaskStore 后不该这么做**——别的 worker 还在跑，故只对内存实现生效）。
+
+**🔴 对阶段二（docker 渲染）的直接影响**
+
+现在取消之所以干脆利落，是因为模型调用是**真异步 IO**。docker 渲染若写成同步阻塞调用
+（`subprocess.run` / docker SDK 同步 API），就是上面坑 1 的情形：**取消完全无效，且整个事件循环被卡死，
+所有其它请求一起挂起**。因此阶段二必须：
+
+- 用 `asyncio.create_subprocess_exec`，或把阻塞调用丢 `run_in_executor`；
+- 在 `except asyncio.CancelledError` / `finally` 里**显式清理容器**（kill + rm），否则容器会漏在那儿。
 
 ---
 
@@ -320,7 +388,7 @@ class BaseResponse[T](BaseModel):
 ### 6.5 会变的边界都放接口
 
 - **`KnowledgeSource`（`common/knowledge.py`）**：`fetch(ref) -> dict`。本版 `FileKnowledgeSource`（ref=文件路径）+ inline 直通（`resolve_knowledge`）。将来 `DBKnowledgeSource`/`CloudKnowledgeSource`，logic 只吃解析后 dict。
-- **`TaskStore`（`components/task/`）**：`create/get/list/update/delete/spawn`。本版 `InMemoryTaskStore`。将来 `RedisTaskStore`；⚠️ 多进程/多 worker 时 `spawn` 不能再用进程内 `create_task`，需接任务队列（arq/celery/dramatiq）——换实现，接口不变。
+- **`TaskStore`（`components/task/`）**：`create/get/list/update/delete/spawn/cancel`。本版 `InMemoryTaskStore`。将来 `RedisTaskStore`；⚠️ 多进程/多 worker 时 `spawn` 不能再用进程内 `create_task`，需接任务队列（arq/celery/dramatiq）——换实现，接口不变。`cancel` 届时用「取消标志位 + worker 轮询」实现同一语义（本版是 `asyncio.Task.cancel()`）。
 - 两者都收在全局 `AppContext`（`initialize()` 里构建）；服务经 `self.context.xxx` 取用，切换实现只改 `AppContext.initialize()` 一处。
 
 ---
@@ -344,6 +412,8 @@ class BaseResponse[T](BaseModel):
 - 搬 `components/opencode/{docker_runtime, initializer, ppt_project}.py`。
 - `pipeline.run_render` 桩换成真实 docker 渲染（起容器 → 确定性初始化 → `run_until` 以「磁盘出现 .pptx」为判据 → `chown` → 落 `PptResult`）。
 - `/ppt/download/{id}` 出 pptx。
+- ⚠️ **渲染必须写成非阻塞**（`asyncio.create_subprocess_exec` 或 `run_in_executor`），否则任务取消失效
+  且事件循环被卡死；并在 `except CancelledError`/`finally` 里清理容器。详见 §3.1 末尾。
 
 **其它待议**
 

@@ -31,3 +31,17 @@ def get_lesson_plan(task_id: str) -> BaseResponse[LessonPlanTaskDetail]:
     return ApiResult.data(
         LessonPlanTaskDetail(**base_detail_fields(task), result=task.result)
     )
+
+
+@router.post("/cancel/{task_id}", response_model=BaseResponse[LessonPlanTaskDetail])
+def cancel_lesson_plan(task_id: str) -> BaseResponse[LessonPlanTaskDetail]:
+    task = context.task_store.get(task_id)
+    if task is None or task.kind != KIND:
+        return ApiResult.error(status.HTTP_404_NOT_FOUND, f"教案任务 {task_id} 不存在")
+    if not context.task_store.cancel(task_id):
+        return ApiResult.error(
+            status.HTTP_409_CONFLICT, f"任务已是终态（status={task.status.value}），无法取消"
+        )
+    return ApiResult.data(
+        LessonPlanTaskDetail(**base_detail_fields(task), result=task.result)
+    )

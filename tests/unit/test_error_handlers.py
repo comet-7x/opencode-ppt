@@ -134,3 +134,18 @@ def test_context_properties_raise_before_initialize() -> None:
     for attr in ("config", "model_provider", "knowledge_source", "task_store"):
         with pytest.raises(RuntimeError, match="未初始化"):
             getattr(fresh, attr)
+
+
+async def test_close_cancels_inflight_tasks() -> None:
+    """关停时不留悬空协程：内存 store 里未终态的任务统一取消。"""
+    from app.components.task import InMemoryTaskStore, TaskStatus
+
+    original = context._task_store
+    store = InMemoryTaskStore()
+    context._task_store = store
+    task = store.create("k")
+    try:
+        await context.close()
+    finally:
+        context._task_store = original
+    assert task.status is TaskStatus.CANCELLED

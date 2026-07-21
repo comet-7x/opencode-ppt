@@ -54,9 +54,9 @@ class PptService:
     def start(self, task: Task, store: TaskStore) -> None:
         """创建后调用：直接给 source_markdown 则渲染，否则从教案起步（后台推进）。"""
         if task.stage == PptStage.RENDER:
-            store.spawn(self._run_render(task, store))
+            store.spawn(task, self._run_render(task, store))
         else:
-            store.spawn(self._run_lesson_plan_stage(task, store))
+            store.spawn(task, self._run_lesson_plan_stage(task, store))
 
     # ————————————————————— 阶段：教案 ————————————————————— #
     async def _run_lesson_plan_stage(
@@ -126,20 +126,20 @@ class PptService:
 
         if task.stage == PptStage.LESSON_PLAN:
             if req.action == ConfirmAction.REGENERATE:
-                store.spawn(self._run_lesson_plan_stage(task, store, feedback=req.feedback))
+                store.spawn(task, self._run_lesson_plan_stage(task, store, feedback=req.feedback))
             else:  # approve
                 if req.edited_content is not None:
                     task.context["lesson_plan_md"] = req.edited_content
-                store.spawn(self._run_slides_stage(task, store))
+                store.spawn(task, self._run_slides_stage(task, store))
             return
 
         if task.stage == PptStage.SLIDES:
             if req.action == ConfirmAction.REGENERATE:
-                store.spawn(self._run_slides_stage(task, store))
+                store.spawn(task, self._run_slides_stage(task, store))
             else:  # approve
                 if req.edited_slides is not None:
                     task.context["slides"] = req.edited_slides
-                store.spawn(self._enter_render(task, store))
+                store.spawn(task, self._enter_render(task, store))
             return
 
         raise ValueError(f"阶段 {task.stage} 无确认门")

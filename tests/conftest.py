@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterator
 from typing import Any, ClassVar
 
@@ -106,6 +107,8 @@ class FakeChatAgent:
     replies: ClassVar[list[str]] = []
     default: str = ""
     empty: bool = False
+    hang: bool = False
+    called: ClassVar[asyncio.Event] = asyncio.Event()
     seen_system_messages: ClassVar[list[str]] = []
     seen_prompts: ClassVar[list[str]] = []
 
@@ -115,16 +118,24 @@ class FakeChatAgent:
     async def astep(self, prompt: str) -> Any:
         cls = type(self)
         cls.seen_prompts.append(prompt)
+        cls.called.set()
+        if cls.hang:                 # 永远停在这个 await 点（给取消测试用）
+            await asyncio.Event().wait()
         if cls.empty:
             return ChatAgentResponse(msgs=[], terminated=False, info={})
         content = cls.replies.pop(0) if cls.replies else cls.default
         return make_agent_response(content)
 
     @classmethod
-    def reset(cls, *, replies: list[str] | None = None, default: str = "", empty: bool = False) -> None:
+    def reset(
+        cls, *, replies: list[str] | None = None, default: str = "",
+        empty: bool = False, hang: bool = False,
+    ) -> None:
         cls.replies = list(replies or [])
         cls.default = default
         cls.empty = empty
+        cls.hang = hang
+        cls.called = asyncio.Event()   # 每次重置一个新的，避免跨用例串信号
         cls.seen_system_messages = []
         cls.seen_prompts = []
 

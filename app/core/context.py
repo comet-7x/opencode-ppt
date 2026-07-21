@@ -37,6 +37,10 @@ class AppContext:
 
     async def close(self) -> None:
         """清理资源（lifespan 关停时调）。"""
+        # 进程内任务随进程消失：关停时统一取消，避免协程被打断在半路且无人记录。
+        # （换 RedisTaskStore 后不该这么做——别的 worker 还在跑，故只对内存实现生效。）
+        if isinstance(self._task_store, InMemoryTaskStore):
+            self._task_store.cancel_all()
         # 预留：await self._redis_client.close()
         return
 
