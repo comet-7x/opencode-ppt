@@ -241,6 +241,10 @@ app/
   （`app_context` = 模块级单例）；服务用 `self.context.model_provider` / `self.context.knowledge_source`。
 - **一行 submit（接口层用）**：`BaseGenService.submit(request)->TaskRef` 收敛「建任务→`spawn(run_task)`→返回 TaskRef」
   三步；端点即 `return xxx_service.submit(req)`。`PptService.submit` 另含「按入口选起始阶段」逻辑。
+- **契约强制**：`BaseGenService(ABC)`，`run_task` 标 `@abstractmethod`——漏实现在**实例化时**就
+  `TypeError`（模块级单例使其 import 即暴露），而不是等后台任务跑起来抛 `NotImplementedError`
+  被 runner 吞进 `task.error`（编码错误伪装成运行时任务失败）。`KIND` 由 `__init_subclass__` 校验，
+  漏设在**类定义时**报错（否则 kind 为空串，GET 时 kind 对不上而 404，属难查的静默 bug）。
 - **两类方法**：`run(...)` 纯用例（返回结果，可复用、可脱离 FastAPI 单测）；
   `run_task(task, store)` runner（管任务态流转 + 异常兜进 `task.error`）。
 - **`PptService` 组合其它服务**：`__init__(context=None, *, lesson_plan=None, slides=None)`，

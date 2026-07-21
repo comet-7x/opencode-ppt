@@ -36,23 +36,23 @@ class CreateJobRequest(BaseModel):
     """创建 PPT 全管线任务。知识来源二选一（inline / path），或直接给 source_markdown 跳到渲染。"""
 
     name: str = Field(..., description="项目名，用于工作目录/容器名（建议英文/数字）")
-    language: str = Field("zh", description="PPT 语言")
+    language: str = Field(default="zh", description="PPT 语言")
 
     # —— 入口物料（三选一，越靠上游越完整）——
-    knowledge_json: dict[str, Any] | None = Field(None, description="内联 knowledge.json")
-    knowledge_path: str | None = Field(None, description="服务端 knowledge.json 路径")
+    knowledge_json: dict[str, Any] | None = Field(default=None, description="内联 knowledge.json")
+    knowledge_path: str | None = Field(default=None, description="服务端 knowledge.json 路径")
     point_ids: list[str] = Field(default_factory=list, description="选中的知识点 ID")
-    source_markdown: str | None = Field(None, description="直接给成品 source.md → 跳到渲染")
+    source_markdown: str | None = Field(default=None, description="直接给成品 source.md → 跳到渲染")
 
     # —— 教案参数（全管线用）——
-    session_title: str = Field("", description="课题")
-    periods: int = Field(2, description="学时数")
+    session_title: str = Field(default="", description="课题")
+    periods: int = Field(default=2, description="学时数")
     # 教学模式（英文键，与 models.SessionParams 一致）
     plan_mode: Literal["new_teach", "review_comprehensive", "unit_summary"] = "new_teach"
 
     # —— 门控 ——
-    confirm_lesson_plan: bool = Field(False, description="教案是否也设确认门")
-    confirm_slides: bool = Field(True, description="逐页内容确认门（默认开）")
+    confirm_lesson_plan: bool = Field(default=False, description="教案是否也设确认门")
+    confirm_slides: bool = Field(default=True, description="逐页内容确认门（默认开）")
 
     # —— 渲染 ——
     runtime: RuntimeMode = RuntimeMode.DOCKER

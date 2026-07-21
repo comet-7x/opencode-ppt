@@ -18,7 +18,7 @@ class LessonPlanGenRequest(BaseModel):
     point_ids: list[str] = Field(..., description="选中的知识点 ID")
 
     session_title: str = Field(..., description="课题")
-    periods: int = Field(2, description="学时数")
+    periods: int = Field(default=2, description="学时数")
     # 教学模式（英文键，与 models.SessionParams 一致）
     plan_mode: Literal["new_teach", "review_comprehensive", "unit_summary"] = "new_teach"
 

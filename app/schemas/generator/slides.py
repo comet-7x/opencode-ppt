@@ -12,8 +12,8 @@ class SlidesGenRequest(BaseModel):
     """给一份 Markdown 教案，拆成逐页结构化内容。"""
 
     lesson_plan_md: str = Field(..., description="Markdown 教案")
-    language: str = Field("中文", description="目标语言")
-    deck_title: str = Field("", description="组装 source.md 时的整体标题")
+    language: str = Field(default="中文", description="目标语言")
+    deck_title: str = Field(default="", description="组装 source.md 时的整体标题")
 
 
 class SlidesResult(BaseModel):

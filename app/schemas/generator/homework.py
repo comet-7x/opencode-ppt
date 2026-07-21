@@ -20,12 +20,12 @@ class HomeworkGenRequest(BaseModel):
 
     session_title: str = Field(..., description="课题")
     # 各题型 (数量, 每题分)
-    mc: tuple[int, int] = Field((3, 4), description="选择题 (数量, 每题分)")
-    fill: tuple[int, int] = Field((2, 3), description="填空题 (数量, 每题分)")
-    subjective: tuple[int, int] = Field((1, 10), description="主观题 (数量, 每题分)")
+    mc: tuple[int, int] = Field(default=(3, 4), description="选择题 (数量, 每题分)")
+    fill: tuple[int, int] = Field(default=(2, 3), description="填空题 (数量, 每题分)")
+    subjective: tuple[int, int] = Field(default=(1, 10), description="主观题 (数量, 每题分)")
     difficulty: Difficulty = "advanced"
-    lesson_plan_md: str | None = Field(None, description="教案，供对齐重难点（可选）")
-    verify: bool = Field(True, description="是否走 L1/L2 溯源校验 + 重生成闭环")
+    lesson_plan_md: str | None = Field(default=None, description="教案，供对齐重难点（可选）")
+    verify: bool = Field(default=True, description="是否走 L1/L2 溯源校验 + 重生成闭环")
 
     @model_validator(mode="after")
     def _check(self) -> HomeworkGenRequest:
