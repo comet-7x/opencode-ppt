@@ -76,4 +76,5 @@ addopts = [
     "--cov=app",
     "--cov-report=term-missing",
     "--cov-report=xml",
+    "--cov-fail-under=95",   # 覆盖率下限,防回退(当前 99%)
 ]

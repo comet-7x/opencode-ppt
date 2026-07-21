@@ -312,8 +312,9 @@ app/
 - ✅ 统一任务运行时：四产线全跑在 `components/task/` 的 `Task`/`TaskStore` 上。
 - ✅ 全局 `AppContext`（模块级单例 `context`，普通类）持共享中间件（config/model_provider/knowledge_source/task_store，+预留 redis）；替换 app.state + 逐层 Depends。
 - ✅ api 全接线：健康 + 四产线端点，统一 `/create`、`/get/{id}` 风格；统一错误处理。
-- ✅ 测试：`tests/test_pipeline.py`（状态机）+ `tests/test_api.py`（接线/轮询/错误落 task.error）全绿；
-  通用任务层 100% 覆盖。真机 `POST /lesson-plan/create` submit→poll 端到端跑通（读文件知识源 → 教案 markdown）。
+- ✅ **测试体系（144 用例 / 覆盖率 99%）**：见 §8。真机 `POST /lesson-plan/create` submit→poll
+  端到端跑通（读文件知识源 → 教案 markdown）。
+- ✅ 质量门禁：`ruff` 全绿、`pyright`（standard，53 文件）0 errors、`pytest --cov-fail-under=95`。
 
 **剩余 · 阶段二（渲染）**
 
@@ -329,3 +330,37 @@ app/
 
 ```
 ```
+
+---
+
+## 8. 测试体系
+
+**分层与打桩边界**（关键：不同层挡在不同位置）
+
+| 目录 | 挡在哪 | 覆盖什么 |
+| --- | --- | --- |
+| `tests/unit/` | 完全不碰模型/FastAPI | 纯函数与契约：选点排序、分值回填、L2 检索、掩码/答案、markdown 渲染、任务存储 CRUD、schema 校验器、`BaseGenService` 契约、异常→HTTP 映射 |
+| `tests/integration/` | **只换掉 `ChatAgent`（模型调用）** | api→service→logic→JSON 解析→渲染→任务态 **全链路真跑** |
+
+> ⚠️ 早期 `test_api_wiring.py` 在**服务层**打桩（override `run`），会把业务逻辑整个跳过——
+> 那只能算"接线测试"。真正的集成测试必须把打桩边界下移到模型调用（`conftest.FakeChatAgent`），
+> 否则覆盖率是虚的（曾经 `homework/logic.py` 只有 21%）。
+
+**共享 fixtures**（`tests/conftest.py`）
+
+- `knowledge` —— 两个知识点的最小样例（含"多余字段"用于验证 `_clean` 过滤）。
+- `fake_agent` —— 把三条产线 logic 里的 `ChatAgent` 换成假的，支持 `replies` 队列 / `default` /
+  `empty`（模拟空响应），并记录 `seen_system_messages` / `seen_prompts` 以断言"选对了 prompt"。
+- `task_store` —— 给全局 `context` 换一份干净的 `InMemoryTaskStore`，用完还原（测试间隔离）。
+
+**重点保障的行为**
+
+- **英文枚举契约**：模型吐中文键（`"选择"`/`"进阶"`）必须解析失败 → `ParseError`（这是该约定的保护网）。
+- **确定性回填**：分值/总分由程序按参数回填，不信模型；`index` 重排成连续 1..N。
+- **确认门**：人工改稿后组装 `source.md` 必须用改后的内容；regenerate 真的再调一次模型。
+- **错误分流**：`ParseError`/`ModelError`/`KnowledgeError` 落进 `task.error`（异步任务无请求可冒泡）；
+  同步路径由 `core/errors.py` 的 handler 映射成 4xx/5xx。
+- **kind 隔离**：拿别的产线的 `task_id` 访问必须 404，不能串号。
+
+**门禁**：`pytest`（含 `--cov-fail-under=95`）+ `ruff` + `pyright`（standard）。
+未覆盖的 7 行是 `__main__` 守卫、openai `ImportError` 兜底、config env 回退等不可达/无价值分支。
