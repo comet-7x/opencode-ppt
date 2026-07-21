@@ -33,7 +33,7 @@ def get_homework(task_id: str) -> BaseResponse[HomeworkTaskDetail]:
 
 
 @router.post("/cancel/{task_id}", response_model=BaseResponse[HomeworkTaskDetail])
-def cancel_homework(task_id: str) -> BaseResponse[HomeworkTaskDetail]:
+async def cancel_homework(task_id: str) -> BaseResponse[HomeworkTaskDetail]:
     task = context.task_store.get(task_id)
     if task is None or task.kind != KIND:
         return ApiResult.error(status.HTTP_404_NOT_FOUND, f"作业任务 {task_id} 不存在")

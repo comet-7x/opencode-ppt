@@ -120,9 +120,25 @@ class InMemoryTaskStore(TaskStore):
         return sum(self.cancel(task_id) for task_id in list(self._tasks))
 
     def _cancel_bg(self, task_id: str) -> None:
+        """掐掉在跑的协程。
+
+        ⚠️ `asyncio.Task.cancel()` **不是线程安全的**：FastAPI 把 `def`（非 async）端点丢到
+        AnyIO worker 线程里跑，在那儿直接 cancel，非 debug 模式下是未定义行为（看着像成功），
+        开 asyncio debug 则直接 `RuntimeError: Non-thread-safe operation...` 且取消不生效。
+        故这里探测线程，跨线程时改走 `call_soon_threadsafe`。
+        """
         bg = self._bg.get(task_id)
-        if bg is not None and not bg.done():
+        if bg is None or bg.done():
+            return
+        loop = bg.get_loop()
+        try:
+            on_loop_thread = asyncio.get_running_loop() is loop
+        except RuntimeError:      # 压根不在事件循环线程里
+            on_loop_thread = False
+        if on_loop_thread:
             bg.cancel()
+        else:
+            loop.call_soon_threadsafe(bg.cancel)
 
     async def wait_all(self) -> None:
         """等所有后台任务跑完（供测试/优雅关停；会等派生任务）。"""

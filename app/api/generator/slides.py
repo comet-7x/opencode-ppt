@@ -31,7 +31,7 @@ def get_slides(task_id: str) -> BaseResponse[SlidesTaskDetail]:
 
 
 @router.post("/cancel/{task_id}", response_model=BaseResponse[SlidesTaskDetail])
-def cancel_slides(task_id: str) -> BaseResponse[SlidesTaskDetail]:
+async def cancel_slides(task_id: str) -> BaseResponse[SlidesTaskDetail]:
     task = context.task_store.get(task_id)
     if task is None or task.kind != KIND:
         return ApiResult.error(status.HTTP_404_NOT_FOUND, f"slides 任务 {task_id} 不存在")

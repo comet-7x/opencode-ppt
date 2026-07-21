@@ -77,6 +77,7 @@ flowchart TB
 **分层职责边界（铁律）**
 
 - **api**：极薄。POST 一行 `return ApiResult.data(xxx_service.submit(req))`；GET 读全局 `context.task_store`。**不用 DI**，直接用模块级服务单例 + 全局 context。**一律返回 `BaseResponse` 信封，不 raise `HTTPException`**（404/409 用 `ApiResult.error(code, msg)` 返回）。不写业务逻辑。
+  ⚠️ **凡是会触碰事件循环的端点（`submit` / `cancel` / `delete`）必须写成 `async def`**，见 §6.6。
 - **services**：**每产线一个服务类**（依赖 provider/source 构造注入）。`run` 纯用例 + `run_task` runner（管任务态与异常兜底）；**调 logic 节点，不自己调 CAMEL**。`PptService` 组合其它服务。
 - **logic**：无状态纯函数，`输入契约 → 输出契约`，内部调 CAMEL agent。可脱离 FastAPI 单测。
 - **models**：纯数据契约（Pydantic / dataclass），**无行为、无 IO**。
@@ -158,13 +159,13 @@ return True
 
 **取消的作用范围（实测结论）**
 
-| 场景                                          | 结果                                                          |
-| --------------------------------------------- | ------------------------------------------------------------- |
-| 协程挂在 `await` 上（模型调用 / 网络 IO）     | **立即中断**，其后代码一行不执行                              |
-| 内联 `await` 调下去的嵌套协程                 | **整条链一起 unwind**（`_run_lesson_plan_stage` → `_run_slides_stage` 即此形态） |
-| 同一 store 里的**其它**任务                   | **不受影响**（一个业务 Task ↔ 一个 asyncio.Task）             |
-| 协程还没被调度过一次（提交后立刻取消）        | 协程**一次都不执行**                                          |
-| 正在跑一段**没有 `await`** 的代码             | **完全打不断**，见下                                          |
+| 场景                                       | 结果                                                                                        |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------- |
+| 协程挂在`await` 上（模型调用 / 网络 IO） | **立即中断**，其后代码一行不执行                                                      |
+| 内联`await` 调下去的嵌套协程             | **整条链一起 unwind**（`_run_lesson_plan_stage` → `_run_slides_stage` 即此形态） |
+| 同一 store 里的**其它**任务          | **不受影响**（一个业务 Task ↔ 一个 asyncio.Task）                                    |
+| 协程还没被调度过一次（提交后立刻取消）     | 协程**一次都不执行**                                                                  |
+| 正在跑一段**没有 `await`** 的代码  | **完全打不断**，见下                                                                  |
 
 > 所以「取消」**不等于**「进行中的所有任务都被终止」，而是「那一个 asyncio.Task 及其整条 await 链被终止」。
 
@@ -173,13 +174,11 @@ return True
 1. **没有 `await` 的代码段打不断。** 纯计算，或 `time.sleep` / 同步 `requests` / 同步 docker SDK
    这类**阻塞调用**，单线程事件循环被它霸占着，连「受理你这个取消请求」都排不上队。
    实测：一段 ~0.9s 的阻塞代码，取消请求被拖了 0.94s 才生效，且该段代码**完整跑完**。
-
 2. **`except BaseException` / 裸 `except:` 会把取消吞掉。** `CancelledError` 自 3.8 起继承
    `BaseException`，被吞后任务会「取消不掉」——状态是 `CANCELLED`，协程却继续跑完。
    我们的 runner **一律用 `except Exception`**，接不到 `CancelledError`，因此取消也不会被误记成 `FAILED`。
    逃逸出来的异常由 `_on_done` done-callback 兜底记日志（接住的是 **runner 自身的 bug**，
    否则 asyncio 只在 GC 时打一句 "Task exception was never retrieved"，极难定位）。
-
 3. **停在确认门的任务没有活着的协程**（后台协程早已结束在等人），此时 `cancel` 只改状态；
    `PptService.confirm` 因 `status != AWAITING_REVIEW` 而拒绝续跑——取消才真正生效。
 
@@ -391,6 +390,43 @@ class BaseResponse[T](BaseModel):
 - **`TaskStore`（`components/task/`）**：`create/get/list/update/delete/spawn/cancel`。本版 `InMemoryTaskStore`。将来 `RedisTaskStore`；⚠️ 多进程/多 worker 时 `spawn` 不能再用进程内 `create_task`，需接任务队列（arq/celery/dramatiq）——换实现，接口不变。`cancel` 届时用「取消标志位 + worker 轮询」实现同一语义（本版是 `asyncio.Task.cancel()`）。
 - 两者都收在全局 `AppContext`（`initialize()` 里构建）；服务经 `self.context.xxx` 取用，切换实现只改 `AppContext.initialize()` 一处。
 
+### 6.6 端点写 `async def` 还是 `def`（**不是风格问题**）
+
+FastAPI 对两者的调度**完全不同**（实测）：
+
+| 端点写法    | 跑在哪                | `asyncio.get_running_loop()`      |
+| ----------- | --------------------- | --------------------------------- |
+| `async def` | 事件循环线程（主线程）| ✅ 有                              |
+| `def`       | **AnyIO worker 线程** | ❌ `RuntimeError: no running event loop` |
+
+由此得出两条硬性规则：
+
+**① `/create` 必须 `async def`。** 端点里调的 `service.submit()` 虽然是**同步 `def`**，但它内部
+`store.spawn()` → `asyncio.create_task()` **要求当前线程有运行中的事件循环**。写成 `def` 端点
+就会在 worker 线程里 `RuntimeError: no running event loop`。
+（至于「async 端点里调同步函数」本身没问题——`submit()` 只做 dict 插入 + `create_task` +
+构造 `TaskRef`，纯内存、零 IO、微秒级，不会阻塞事件循环。**判据永远是「它会不会阻塞」，
+而不是「它是不是 async」**。）
+
+**② `/cancel`、`/ppt/delete` 必须 `async def`。** 它们会走到 `asyncio.Task.cancel()`，而
+**`Task.cancel()` 不是线程安全的**。实测跨线程调用：
+
+```
+asyncio debug = False → cancel() 正常返回，任务确实被取消     ← 假象，未定义行为
+asyncio debug = True  → RuntimeError: Non-thread-safe operation invoked on an
+                        event loop other than the current one；任务【没有】被取消
+```
+
+即：生产环境不开 debug 时它「看起来能用」，实则是竞态——取消可能被延迟到事件循环因别的原因
+醒来，或干脆丢失。**这类 bug 只在高负载下偶发，极难复现。**
+
+**纵深防御**：除了端点写 `async def`，`InMemoryTaskStore._cancel_bg` 还会自己探测线程，
+跨线程时改走 `loop.call_soon_threadsafe(bg.cancel)`——这样将来谁不小心写了 `def` 端点也不会踩坑。
+`tests/unit/test_task_store.py::test_cancel_is_safe_from_a_worker_thread` 开着 asyncio debug 守这条。
+
+**纯读端点（`/get`、`/list`、`/health`、`/download`）保持 `def`** 没问题：只读内存 dict，
+不碰事件循环，放 worker 线程反而不占用循环。
+
 ---
 
 ## 7. 进度与验收
@@ -422,7 +458,6 @@ class BaseResponse[T](BaseModel):
 - CAMEL 对自定义模型名报 `Unknown model … context window` 警告（无害，可选消除）。
 
 ```
-
 ```
 
 ---

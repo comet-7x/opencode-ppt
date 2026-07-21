@@ -93,7 +93,7 @@ async def confirm_job(job_id: str, req: ConfirmRequest) -> BaseResponse[PptTaskD
 
 
 @router.post("/cancel/{job_id}", response_model=BaseResponse[PptTaskDetail])
-def cancel_job(job_id: str) -> BaseResponse[PptTaskDetail]:
+async def cancel_job(job_id: str) -> BaseResponse[PptTaskDetail]:
     """主动中止：跑到一半则掐掉后台协程；停在确认门则直接作废（confirm 随后会拒绝）。"""
     task = _find(job_id)
     if task is None:
@@ -126,7 +126,7 @@ def download_pptx(job_id: str) -> FileResponse | BaseResponse[Any]:
 
 
 @router.delete("/delete/{job_id}", response_model=BaseResponse[Any])
-def delete_job(job_id: str) -> BaseResponse[Any]:
+async def delete_job(job_id: str) -> BaseResponse[Any]:
     if _find(job_id) is None:
         return _not_found(job_id)
     context.task_store.delete(job_id)

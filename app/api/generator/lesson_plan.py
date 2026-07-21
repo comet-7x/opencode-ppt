@@ -34,7 +34,7 @@ def get_lesson_plan(task_id: str) -> BaseResponse[LessonPlanTaskDetail]:
 
 
 @router.post("/cancel/{task_id}", response_model=BaseResponse[LessonPlanTaskDetail])
-def cancel_lesson_plan(task_id: str) -> BaseResponse[LessonPlanTaskDetail]:
+async def cancel_lesson_plan(task_id: str) -> BaseResponse[LessonPlanTaskDetail]:
     task = context.task_store.get(task_id)
     if task is None or task.kind != KIND:
         return ApiResult.error(status.HTTP_404_NOT_FOUND, f"教案任务 {task_id} 不存在")

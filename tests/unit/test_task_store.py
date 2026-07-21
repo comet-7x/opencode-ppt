@@ -196,3 +196,31 @@ def test_is_terminal_covers_exactly_the_end_states() -> None:
         True,    # failed
         True,    # cancelled
     ]
+
+
+async def test_cancel_is_safe_from_a_worker_thread() -> None:
+    """FastAPI 把 `def` 端点丢 AnyIO worker 线程跑；那里直接 Task.cancel() 非线程安全。
+
+    开 asyncio debug 时跨线程 cancel 会 RuntimeError 且取消不生效——store 必须自己
+    探测线程并改走 call_soon_threadsafe。
+    """
+    asyncio.get_running_loop().set_debug(True)
+    store = InMemoryTaskStore()
+    task = store.create("k")
+    reached_end = False
+
+    async def long_work() -> None:
+        nonlocal reached_end
+        await asyncio.sleep(10)
+        reached_end = True
+
+    try:
+        store.spawn(task, long_work())
+        await asyncio.sleep(0)
+        await asyncio.to_thread(store.cancel, task.task_id)   # 在别的线程里取消
+        await store.wait_all()
+    finally:
+        asyncio.get_running_loop().set_debug(False)
+
+    assert task.status is TaskStatus.CANCELLED
+    assert reached_end is False          # 真的被掐断了，不是只改了状态
