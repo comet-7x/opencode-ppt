@@ -20,7 +20,7 @@ dev = [
     "pytest>=9.0.3",
     "pytest-asyncio>=0.24",
     "pytest-cov>=6.0",
-    "pre-commit>=4.6.0",
+    "pre-commit>=4.6.1",
 ]
 
 [build-system]
