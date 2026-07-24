@@ -15,7 +15,7 @@ dependencies = [
 # uv sync 默认就会安装 dev 组
 [dependency-groups]
 dev = [
-    "ruff>=0.8.0",
+    "ruff>=0.16.0",
     "pyright>=1.1.390",
     "pytest>=9.0.3",
     "pytest-asyncio>=0.24",
